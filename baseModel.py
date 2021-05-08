@@ -72,23 +72,56 @@ class Simulation:
                 self.spike_times[time_series_index] = 1 
         print("Simulation completed") # Indicate to operator that simulation is finished
 
-def main():
-    # ========== CONTROL PANEL ==========
+def forcingFunction(lambdaFunction, num_timesteps, dt):
+    return list(map(lambdaFunction, list(map(lambda t: t*dt, range(num_timesteps)))))
+def packageParameters(rest_Vm, spike_Vm, neuron_threshold, membrane_time_constant, membrane_resistance, absolute_refractory_period):
+    parameterDictionary = {"rest_Vm": rest_Vm,
+                           "spike_Vm": spike_Vm,
+                           "neuron_threshold": neuron_threshold,
+                           "membrane_time_constant": membrane_time_constant,
+                           "membrane_resistance": membrane_resistance,
+                           "absolute_refractory_period": absolute_refractory_period}
+    return parameterDictionary
 
-    # Model Parameters 
-    dt = 0.001
-    rest_Vm = -70
-    spike_Vm = 50
-    neuron_threshold = -40
+def main():
+    # ========== CONTROL PANEL ======================================================================
+
+    # Model Parameters ------------------------------------------------------------------------------
+    dt = 0.001 # timestep size in ms
+    sim_duration = 100 # duration of simulation in ms
+    num_timesteps = int(sim_duration/dt) # Infer number of timesteps from simulation length and dt
+    rest_Vm = -70 # For LIFNeuron this is the starting and reset potential
+    spike_Vm = 50 # For LIFNeuron this is the spiking potential
+    neuron_threshold = -40 # Whenever LIFNeuron reaches this potential from below the model 'fires' a 'spike'.
     membrane_time_constant = 1
     membrane_resistance = 1
-    absolute_refractory_period = 0
+    absolute_refractory_period = 0 # NOT YET SUPPORTED IN LIFNeuron: the duration of spiking events before returning to rest_Vm
+    parameterDictionary = packageParameters(rest_Vm, spike_Vm, neuron_threshold, membrane_time_constant, membrane_resistance, absolute_refractory_period)
 
-    # Forcing Parameters
+    # Forcing Parameters ----------------------------------------------------------------------------
     omega_theta = 1 # Natural (angular) frequency corresponding to hippocampal theta LFP oscillations
     omega_interference = 1 # Natural (angular) frequency of interloping oscillator
 
     amplitude_theta = 1 # Amplitude of hippocampal theta LFP oscillations (units?)
     amplitude_interference = 1 # Amplitude of interloping oscillator
 
-    # ========== INSTANTIATE MODEL AND RUN SIMULATION ==========
+    # Functions defining independent field oscillations using forcing parameters
+    thetaFunction = lambda t: amplitude_theta*np.sin(omega_theta*t) # Corresponds to hippocampal theta sinusoidal oscillations
+    interferenceFunction = lambda t: amplitude_interference*np.sin(omega_interference*t) # Corresponds to some interferring oscillation
+
+    # Generate the theta and interference oscillations over specified timeseries, then superimpose the two
+    thetaRhythm = forcingFunction(thetaFunction, num_timesteps, dt) # Generate list of theta  rhythm amplitudes as a function of time
+    interferenceRhythm = forcingFunction(interferenceFunction, num_timesteps, dt) # Generates list of interferring oscillation amplitude as a function of time
+    fieldOscillation = np.array([x + y for x, y in zip(thetaRhythm, interferenceRhythm)]) # Add the two lists element-wise, then convert to numpy array
+
+    # ========== INSTANTIATE MODEL AND RUN SIMULATION ===============================================
+
+    # Instantiate LIFNeuron
+    Neuron = LIFNeuron(parameterDictionary)
+
+    # Create and run simulation
+    NeuronSim = Simulation(Neuron)
+    NeuronSim.runSim(fieldOscillation, num_timesteps, dt)
+
+if __name__ == "__main__":
+    main()
