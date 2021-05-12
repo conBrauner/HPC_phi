@@ -1,12 +1,9 @@
-import os
-import time
-import random
 import numpy as np
 import matplotlib.pyplot as plt
-from notion.client import NotionClient
-from datetime import datetime
 from scipy.signal import hilbert
 from scipy.stats import mode
+from sklearn.neighbors import KernelDensity
+from sklearn.model_selection import GridSearchCV, LeaveOneOut
 
 class LIFNeuron:
     """
@@ -92,7 +89,7 @@ def packageParameters_LIFNeuron(rest_Vm, spike_Vm, neuron_threshold, membrane_ti
                            "membrane_resistance": membrane_resistance,
                            "absolute_refractory_period": absolute_refractory_period}
     return parameterDictionary
-def plotSolution(SimulationObject, thetaRhythm, darkBackground=False, suppress=False):
+def plotSolution(SimulationObject, thetaRhythm, cycle_boundary_indices, darkBackground=False, suppress=False):
     """
     Takes the completed simulation and thetaRhythm (really this could be any oscillation, since we merely plot it) and plots these in two rows with shared x axis
     - enabling darkBackground option makes all axes, tick marks, plotted lines and text labels white. Useful for Notion, Manim and dark background slide decks
@@ -104,11 +101,13 @@ def plotSolution(SimulationObject, thetaRhythm, darkBackground=False, suppress=F
             fig, axes = plt.subplots(nrows=2, sharex=True, sharey=False) # Two graps, two rows, linked x-axes
             fig.patch.set_alpha(0.0) # Make figure background transparent
             for ax in axes:
-                ax.spines['top'].set_visible = False # Make the top figure border invisible
-                ax.spines['right'].set_visible = False # Make the right figure border invisible
+                ax.spines['top'].set_visible(False) # Make the top figure border invisible
+                ax.spines['right'].set_visible(False)# Make the right figure border invisible
 
             axes[0].plot(SimulationObject.timeAxis, SimulationObject.Vm_t, linewidth=0.8, color='deeppink', label='Vm') # Plot the membrane potential time series
             axes[1].plot(SimulationObject.timeAxis, thetaRhythm, linewidth=0.8, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
+            for boundary_index in cycle_boundary_indices:
+                axes[1].vlines(SimulationObject.timeAxis[boundary_index], min(thetaRhythm), max(thetaRhythm), linestyle='dashed', color='k', linewidth=0.8)
 
             axes[0].set_ylabel("$V_m$ $(mV)$") # y-axis label of membrane potential time series, in millivolts
             axes[1].set_ylabel("$Amplitude$") # y-axis label of theta rhythm
@@ -131,6 +130,8 @@ def plotSolution(SimulationObject, thetaRhythm, darkBackground=False, suppress=F
 
             axes[0].plot(SimulationObject.timeAxis, SimulationObject.Vm_t, linewidth=0.8, color='w', label='Vm') # Plot the membrane potential time series
             axes[1].plot(SimulationObject.timeAxis, forcingFunction, linewidth=0.8, color='w', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
+            for boundary_index in cycle_boundary_indices:
+                axes[1].vlines(SimulationObject.timeAxis[boundary_index], min(thetaRhythm), max(thetaRhythm), linestyle='dashed', color='silver', linewidth=0.8)
 
             axes[0].set_ylabel("$V_m\space (mV)$", color='w') # y-axis label of membrane potential time series, in millivolts (in white)
             axes[1].set_ylabel("$Amplitude$", color='w') # y-axis label of theta rhythm (in white)
@@ -152,12 +153,53 @@ def computePhi(thetaRhythm, theta_LFP_shift, SimulationObject=False, realData=Fa
         spike_phi = list(map(lambda i, j: j*theta_phase_time_series[i], range(len(SimulationObject.spike_times)), SimulationObject.spike_times))
 
     return spike_phi, theta_phase_time_series
-def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_mode=0, cycleStart=0):
+def kernelDensityEstimation(spike_phi, plotPDF_Estimation=True):
+    """
+    Kernel density estimation as described and implemented at https://jakevdp.github.io/PythonDataScienceHandbook/05.13-kernel-density-estimation.html
+    - First uses leave-one-out cross-validation (leave-one-out works well for when there aren't many data points) to optimize the smoothing parameter (bandwidth) over some domain
+    - Performs a kernel density estimation algorithm to create a model probability density function for the intracycle phi over interval phi=[0, 2*pi) 
+        - Plots this model PDF over [0, 2*pi) if requested
+    - returns the value of phi corresponding to maximum spike probability, the output measure of central tendency
+    """
+    spike_phi = np.array(spike_phi) # Convert the passed list into an array
+    spike_phi_2D = np.reshape(spike_phi, (-1, 1)) # The backend requires a 2D array of shape (N, 1), where N is the number of samples
+
+
+    bandwidth_space = 10**np.linspace(-1, 1, 100) # Allows bandwidths to take on values between 10**-1 and 10**1
+    grid = GridSearchCV(KernelDensity(kernel='gaussian'), # Optimize prediction accuracy using the SAME kernel as what the KDE will ultimately use (below)
+                                    {'bandwidth': bandwidth_space}, # The bandwidths we'll assess in cross-validation
+                                    cv=LeaveOneOut()) # Cross-validation will 'leave-one-out', i.e. only set asside 1 spike to assess how good the KDE is (since we haven't many spikes to begin with)
+    grid.fit(spike_phi_2D) # Perform the optimization
+    optimal_bandwidth = grid.best_params_['bandwidth'] # Get the optimal bandwidth for the true KDE
+
+    KDE = KernelDensity(bandwidth=optimal_bandwidth, kernel='gaussian') # Instantiate the KDE
+    KDE.fit(spike_phi_2D) # Optimize it using the intracycle spike phi
+
+    phi_interval = np.reshape(np.linspace(0, 2*np.pi, num=100), (-1, 1)) # A linspace vector which allows us to plot the KDE over [0, 2*pi) and extract a value of phi corresponding to max probability
+    ln_PDF_estimation = KDE.score_samples(phi_interval) # For some reason you can only extract the ln() of the estimate PDF from the model
+    
+    if plotPDF_Estimation: # If operator requested a figure
+        plt.close()
+        fig, ax = plt.subplots() # One graph, one figure
+        fig.patch.set_alpha(0.0) # Make figure background transparent
+
+        ax.spines['top'].set_visible(False) # Make the top figure border invisible
+        ax.spines['right'].set_visible(False) # Make the right figure border invisible
+
+        ax.plot(phi_interval, np.exp(ln_PDF_estimation), color='deeppink', linewidth=0.8) # Plot the KDE as over interval [0, 2*pi)
+        ax.set_xlabel("$\phi$", fontsize=13) # Label x-axis with intracycle phi
+        ax.set_ylabel("$Probability$", fontsize=13) # Label y-axis as probability
+
+        plt.show() # Reveal the graph
+       
+    return phi_interval[np.argmax(np.exp(ln_PDF_estimation))][0] # Index the phi interval of shape (N, 1) where N is the number of samples from [0, 2*pi) with [index of max probability][0], returning intracycle phi of max probability
+def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_mode=0, cycleStart=0, plotPDF_Estimation=True):
     spike_phi = np.array(spike_phi)
     # Dictionary translating user-selected central tendency measure into an explicit string for clarity of reading 
     central_tendency_measure_dictionary = {"0": 'mean',
                                            "1": 'median',
-                                           "2": 'mode'}
+                                           "2": 'mode',
+                                           "3": 'KDE'}
     central_tendency_mode = central_tendency_measure_dictionary[str(central_tendency_mode)] # Key the dictionary using the user selection as a string
 
     if cycleStart != 0: # If we consider phi != 0 to be the cycle boundary
@@ -211,7 +253,7 @@ def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_m
 
         for i, cycle_end_index in enumerate(cycle_boundary_indices, start=0): # Take each entry to be a right cycle boundary
 
-            phi_indices = np.where(spike_phi[cycle_start_index:cycle_end_index] > 0)[0] # These are the indices of spikes with phi values between the cycle boundaries
+            phi_indices = np.array(list((map(lambda i: i + cycle_start_index, np.where(spike_phi[cycle_start_index:cycle_end_index] > 0)[0])))) # These are the indices of spikes with phi values between the cycle boundaries
             print("indices of nonzero phi on cycle {}: {}".format(i, phi_indices))
 
             if phi_indices.size == 0: # If no spikes occurred on the current cycle
@@ -226,7 +268,7 @@ def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_m
 
             cycle_start_index = cycle_end_index # The current right boundary index becomes the start of the next theta cycle interval
             
-        phi_indices = np.where(spike_phi[cycle_start_index:] > 0)[0] # These are the indices of spikes with phi values between the cycle boundaries
+        phi_indices = np.array(list((map(lambda i: i + cycle_start_index, np.where(spike_phi[cycle_start_index:] > 0)[0])))) # These are the indices of spikes with phi values between the cycle boundaries
 
         if phi_indices.size == 0: # If no spikes occurred on the current cycle
             print("final theta cycle contains no spikes") # Notify the operator
@@ -244,7 +286,7 @@ def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_m
 
         for i, cycle_end_index in enumerate(cycle_boundary_indices, start=0): # Take each entry to be a right cycle boundary
 
-            phi_indices = np.where(spike_phi[cycle_start_index:cycle_end_index] > 0)[0] # These are the indices of spikes with phi values between the cycle boundaries
+            phi_indices = np.array(list((map(lambda i: i + cycle_start_index, np.where(spike_phi[cycle_start_index:cycle_end_index] > 0)[0])))) # These are the indices of spikes with phi values between the cycle boundaries
             print("indices of nonzero phi on cycle {}: {}".format(i, phi_indices))
 
             if phi_indices.size == 0: # If no spikes occurred on the current cycle
@@ -255,11 +297,11 @@ def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_m
                 phi_values = [] # Initialize a list
                 for j in phi_indices: # For each index corresponding to a spike
                     phi_values.append(spike_phi[j]) # Take the spike's phase from spike_phi
-                cycle_phi_central_tendencies.append(mode(np.array(phi_values))) # Compute mode on all values phi falling on interval [cycle_start, cycle_end)
+                cycle_phi_central_tendencies.append(mode(np.array(phi_values))[0][0]) # Compute mode on all values phi falling on interval [cycle_start, cycle_end)
 
             cycle_start_index = cycle_end_index # The current right boundary index becomes the start of the next theta cycle interval
             
-        phi_indices = np.where(spike_phi[cycle_start_index:] > 0)[0] # These are the indices of spikes with phi values between the cycle boundaries
+        phi_indices = np.array(list((map(lambda i: i + cycle_start_index, np.where(spike_phi[cycle_start_index:] > 0)[0])))) # These are the indices of spikes with phi values between the cycle boundaries
 
         if phi_indices.size == 0: # If no spikes occurred on the current cycle
             print("final theta cycle contains no spikes") # Notify the operator
@@ -268,25 +310,84 @@ def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_m
             phi_values = [] # Initialize a list
             for j in phi_indices: # For each index corresponding to a spike
                 phi_values.append(spike_phi[j]) # Take the spike's phase from spike_phi
-            cycle_phi_central_tendencies.append(mode(np.array(phi_values))) # Compute mode on all values phi from the end of the last cycle to the end of the time series
+            cycle_phi_central_tendencies.append(mode(np.array(phi_values))[0][0]) # Compute mode on all values phi from the end of the last cycle to the end of the time series
     
+    elif central_tendency_mode == 'KDE':
+
+        cycle_start_index = 0 # On the first cycle the left boundary is the first element
+        cycle_phi_central_tendencies = [] # Will contain the output mean spike_phi for each cycle
+
+        for i, cycle_end_index in enumerate(cycle_boundary_indices, start=0): # Take each entry to be a right cycle boundary
+
+            phi_indices = np.array(list((map(lambda i: i + cycle_start_index, np.where(spike_phi[cycle_start_index:cycle_end_index] > 0)[0])))) # These are the indices of spikes with phi values between the cycle boundaries
+            print("indices of nonzero phi on cycle {}: {}".format(i, phi_indices))
+
+            if phi_indices.size == 0: # If no spikes occurred on the current cycle
+                print("theta cycle {} contains no spikes".format(i)) # Notify the operator
+                continue # Proceed to the next theta cycle; no central tendency to compute
+
+            else: # If there were spikes
+                phi_values = [] # Initialize a list
+                for j in phi_indices: # For each index corresponding to a spike
+                    phi_values.append(spike_phi[j]) # Take the spike's phase from spike_phi
+                cycle_phi_central_tendencies.append(kernelDensityEstimation(phi_values, plotPDF_Estimation=plotPDF_Estimation))
+
+            cycle_start_index = cycle_end_index # The current right boundary index becomes the start of the next theta cycle interval
+            
+        phi_indices = np.array(list((map(lambda i: i + cycle_start_index, np.where(spike_phi[cycle_start_index:] > 0)[0])))) # These are the indices of spikes with phi values between the cycle boundaries
+
+        if phi_indices.size == 0: # If no spikes occurred on the current cycle
+            print("final theta cycle contains no spikes") # Notify the operator
+
+        else: # If there were spikes
+            phi_values = [] # Initialize a list
+            for j in phi_indices: # For each index corresponding to a spike
+                phi_values.append(spike_phi[j]) # Take the spike's phase from spike_phi
+            cycle_phi_central_tendencies.append(kernelDensityEstimation(phi_values, plotPDF_Estimation=plotPDF_Estimation))
+    
+
     print("intracycle central tendencies: {}".format(cycle_phi_central_tendencies))
 
-    return cycle_phi_central_tendencies
-def constructReturnMap(cycle_phi_central_tendencies):
+    return np.array(cycle_phi_central_tendencies), cycle_boundary_indices
+def constructReturnMap(cycle_phi_central_tendencies, darkBackground=False, suppress=False):
 
-    phi_K_previous = cycle_phi_central_tendencies.pop(-1)
-    phi_K = cycle_phi_central_tendencies.pop(0)
+    phi_K_previous = np.delete(cycle_phi_central_tendencies, -1) # All entries except the Kth one can be the (K - 1)th entry
+    phi_K = np.delete(cycle_phi_central_tendencies, 0) # All entries except the 0th can be the Kth (i.e. next) entry
+    line_of_identity = np.arange(min(cycle_phi_central_tendencies)//1, max(cycle_phi_central_tendencies)//1 + 2) # Creates a line of identity with domain that spans the range of phi central tendencies
 
-    plt.close()
-    fig, ax = plt.subplots(nrows=1, ncols=1)
-    fig.patch.set_alpha(0.0)
-    ax.spines['right'].set_visible = False
-    ax.spines['top'].set_visible = False
+    if not suppress:
+        if not darkBackground:
+            plt.close()
+            fig, ax = plt.subplots() # A single plot
+            fig.patch.set_alpha(0.0) # Make figure background transparent
 
-    ax.scatter(phi_K_previous, phi_K)
+            ax.spines['right'].set_visible(False) # Make the right figure border invisible
+            ax.spines['top'].set_visible(False) # Make the top figure border invisible
 
-    plt.show()
+            ax.scatter(phi_K_previous, phi_K, s=6, color='deeppink') # Plot the 'next' central tendency as a function of the previous (Return map, AKA Poincare map (?))
+            ax.plot(line_of_identity, line_of_identity, linestyle='dashed', color='k', linewidth=0.8) # Plot a dashed line indicating the line of identity
+            ax.set_xlabel("$\phi_{k-1}$", fontsize=13) # x-axis label for previous/current (depending on perspective) phi central tendency
+            ax.set_ylabel("$\phi_{k}$", fontsize=13) # y-axis label for current/next (depending on perspective) phi central tendency
+
+            plt.show()
+        else:
+            plt.close()
+            fig, ax = plt.subplots() # A single plot
+            fig.patch.set_alpha(0.0) # Make figure background transparent
+
+            ax.spines['right'].set_visible(False) # Make the right figure border invisible
+            ax.spines['top'].set_visible(False) # Make the top figure border invisible
+            ax.spines['left'].set_color('w') # Make y-axis white
+            ax.spines['bottom'].set_color('w') # Make x-axis white
+            ax.tick_params(axis='x', colors="w") # Make x-axis ticks white
+            ax.tick_params(axis='y', colors="w") # Make y-axis ticks white
+
+            ax.scatter(phi_K_previous, phi_K, s=6, color='w') # Plot the 'next' central tendency as a function of the previous (Return map, AKA Poincare map (?))
+            ax.plot(line_of_identity, line_of_identity, linestyle='dashed', color='silver') # Plot a dashed line indicating the line of identity
+            ax.set_xlabel("$\phi_{k-1}$", fontsize=13, color='w') # x-axis label for previous/current (depending on perspective) phi central tendency
+            ax.set_ylabel("$\phi_{k}$", fontsize=13, color='w') # y-axis label for current/next (depending on perspective) phi central tendency
+
+            plt.show()
 
 def main():
     # ========== CONTROL PANEL ======================================================================
@@ -304,11 +405,14 @@ def main():
     parameterDictionary = packageParameters_LIFNeuron(rest_Vm, spike_Vm, neuron_threshold, membrane_time_constant, membrane_resistance, absolute_refractory_period)
 
     # Analysis Parameters ---------------------------------------------------------------------------
-    """ 0 = mean; 1 = median; 2 = mode; """
-    central_tendency_mode = 0 # The selected measure of intracycle phi central tendency
+    """ 0 = mean; 1 = median; 2 = mode; 3 = kernel density estimation (KDE); """
+    central_tendency_mode = 2 # The selected measure of intracycle phi central tendency
     theta_cycle_boundary_phase = 3*np.pi/2 # This value (in radians) when crossed denotes the beginning of a new cycle; sin(t) default is 3*pi/2; cos(t) default is 0*pi
     suppress_simulation_figure = False
     simulation_figure_dark_background = False
+    suppress_return_map_figure = False
+    return_map_figure_dark_background = False
+    plot_KDE = True
 
     # Forcing Parameters ----------------------------------------------------------------------------
     omega_theta = 2*np.pi*125**(-1) # Natural (angular) frequency corresponding to hippocampal theta LFP oscillations (radians/ms)
@@ -320,6 +424,8 @@ def main():
     theta_LFP_shift = amplitude_theta # Theta local field potential shift, corresponds to a vertical translation of the sinusoid
     interference_LFP_shift = amplitude_interference # Interloping oscillator local field potential shift, corresponds to a vertical translation of the sinusoid
 
+    # ========== CREATE FORCING FUNCTIONS ===========================================================
+
     # Functions defining independent field oscillations using forcing parameters
     thetaFunction = lambda t: amplitude_theta*np.sin(omega_theta*t) + theta_LFP_shift # Corresponds to hippocampal theta sinusoidal oscillations
     interferenceFunction = lambda t: amplitude_interference*np.sin(omega_interference*t) + interference_LFP_shift # Corresponds to some interferring oscillation
@@ -329,10 +435,12 @@ def main():
     interferenceRhythm = forcingFunction(interferenceFunction, num_timesteps, dt) # Generates list of interferring oscillation amplitude as a function of time
     fieldOscillation = np.array([x + y for x, y in zip(thetaRhythm, interferenceRhythm)]) # Add the two lists element-wise, then convert to numpy array
 
+    # DEBUGGING: Plot the analytic signal projected onto the complex plane, useful to determine appropriate value of 'theta_cycle_boundary_phase' 
     # plt.close()
     # fig, ax = plt.subplots()
     # ax.scatter(hilbert(thetaRhythm).real[0], hilbert(thetaRhythm).imag[0])
     # plt.show()
+
     # ========== INSTANTIATE MODEL, RUN SIMULATION AND ANALYZE OUTPUT ===============================
 
     # Instantiate LIFNeuron
@@ -342,15 +450,15 @@ def main():
     NeuronSim = Simulation(Neuron)
     NeuronSim.runSim(fieldOscillation, num_timesteps, dt)
 
-    # Plot simulation output
-    plotSolution(NeuronSim, thetaRhythm, darkBackground=simulation_figure_dark_background, suppress=suppress_simulation_figure)
-
     # Compute simulation phi sequence
     phi_sequence, theta_phase_time_series = computePhi(thetaRhythm, theta_LFP_shift, SimulationObject=NeuronSim)
 
     # Compute phi central tendencies on each theta cycle and construct return map
-    cycle_phi_central_tendencies = cycle_CentralTendency(theta_phase_time_series, phi_sequence, central_tendency_mode=central_tendency_mode, cycleStart=theta_cycle_boundary_phase)
-    constructReturnMap(cycle_phi_central_tendencies)
+    cycle_phi_central_tendencies, cycle_boundary_indices = cycle_CentralTendency(theta_phase_time_series, phi_sequence, central_tendency_mode=central_tendency_mode, cycleStart=theta_cycle_boundary_phase, plotPDF_Estimation=plot_KDE)
+
+    # Plot simulation output and Return map
+    plotSolution(NeuronSim, thetaRhythm, cycle_boundary_indices, darkBackground=simulation_figure_dark_background, suppress=suppress_simulation_figure)
+    constructReturnMap(cycle_phi_central_tendencies, darkBackground=return_map_figure_dark_background, suppress=suppress_return_map_figure)
 
 if __name__ == "__main__":
     main()
