@@ -23,9 +23,15 @@ class LIFNeuron:
         self.membrane_time_constant = parameterDictionary['membrane_time_constant']
         self.absolute_refractory_period = parameterDictionary['absolute_refractory_period']
         self.membrane_resistance = parameterDictionary['membrane_resistance']
+        self.dt = parameterDictionary['dt']
 
         # Indicates if a spike occurred at the last time step 
         self.spikeState = False
+
+        # Set parameters of the refractory period
+        self.refractory_period_length = self.absolute_refractory_period//self.dt # Use the timstep to convert a desired refractory period duration (ms) to length (indices) 
+        self.refractory_period_counter = 0 # Initialize the model as being 'zero steps' along the refractory period
+
 
     def _updateVm(self, time_series_index, forcing, dt):
         """
@@ -34,9 +40,12 @@ class LIFNeuron:
         if self.Vm >= self.neuron_threshold and self.spikeState == False: # Check if threshold met/exceeded + if the last step was a spike
             self.Vm = self.spike_Vm # Jump to spiking potential if criteria met
             self.spikeState = True # Tag the current time step as having been a spike event
-        elif self.spikeState == True: # Check if the last time step was a spike
+        elif self.spikeState == True and self.refractory_period_counter < self.refractory_period_length: # If the neuron is in the spiking state but has not finished it's refractory period
+            self.refractory_period_counter += 1 # Move one step through the refractory period
+        elif self.spikeState == True and self.refractory_period_counter >= self.refractory_period_length: # Check if the last time step was a spike and if the refractory period is over
             self.Vm = self.rest_Vm # If so, return to resting potential
             self.spikeState = False # Change the state to reflect the potential reset
+            self.refractory_period_counter = 0 # Rest the refractory period
         else: # If the model is currently subthreshold
             self.VL = -(self.Vm - self.rest_Vm) # Compute the decrement in potential change due to the leak
             self.V_forcing = forcing*self.membrane_resistance # Compute contribution from forcing function
@@ -67,7 +76,7 @@ class Simulation:
         for time_series_index in range(num_timesteps): # For each time step in the desired simulation length for a given dt
             self.model.iterate(time_series_index, forcingFunction[time_series_index], dt) # Advance the model state variables by 1 time step
             self.Vm_t[time_series_index] = self.model.Vm # Append current membrane potential to solution
-            if self.model.spikeState == True: # HARDCODED FOR LIF: Refer to model state to determine if current step corresponds to a spike
+            if self.model.spikeState == True and self.model.refractory_period_counter == 0: # HARDCODED FOR LIF: Refer to model state to determine if current step corresponds to a spike
                 self.spike_times[time_series_index] = 1 
         print("Simulation completed") # Indicate to operator that simulation is finished
 
@@ -77,7 +86,7 @@ def forcingFunction(lambdaFunction, num_timesteps, dt):
     Output is a list with length num_timesteps where each element solves y = lambdaFunction = f(t) for t on interval [0, dt*(num_timesteps - 1)]
     """
     return list(map(lambdaFunction, list(map(lambda t: t*dt, range(num_timesteps))))) # Note the nested function for scaling each element by dt
-def packageParameters_LIFNeuron(rest_Vm, spike_Vm, neuron_threshold, membrane_time_constant, membrane_resistance, absolute_refractory_period):
+def packageParameters_LIFNeuron(rest_Vm, spike_Vm, neuron_threshold, membrane_time_constant, membrane_resistance, absolute_refractory_period, dt):
     """
     Takes all required parameters for the LIFNeuron class and forms a dictionary with hardcoded keys. 
     Values are assigned as class attributes during __init__(self, *args)
@@ -87,7 +96,8 @@ def packageParameters_LIFNeuron(rest_Vm, spike_Vm, neuron_threshold, membrane_ti
                            "neuron_threshold": neuron_threshold,
                            "membrane_time_constant": membrane_time_constant,
                            "membrane_resistance": membrane_resistance,
-                           "absolute_refractory_period": absolute_refractory_period}
+                           "absolute_refractory_period": absolute_refractory_period,
+                           "dt": dt}
     return parameterDictionary
 def plotSolution(SimulationObject, thetaRhythm, cycle_boundary_indices, darkBackground=False, suppress=False):
     """
@@ -153,7 +163,7 @@ def computePhi(thetaRhythm, theta_LFP_shift, SimulationObject=False, realData=Fa
         spike_phi = list(map(lambda i, j: j*theta_phase_time_series[i], range(len(SimulationObject.spike_times)), SimulationObject.spike_times))
 
     return spike_phi, theta_phase_time_series
-def kernelDensityEstimation(spike_phi, plotPDF_Estimation=True):
+def kernelDensityEstimation(spike_phi, cycleNumber, plotPDF_Estimation=True):
     """
     Kernel density estimation as described and implemented at https://jakevdp.github.io/PythonDataScienceHandbook/05.13-kernel-density-estimation.html
     - First uses leave-one-out cross-validation (leave-one-out works well for when there aren't many data points) to optimize the smoothing parameter (bandwidth) over some domain
@@ -164,13 +174,19 @@ def kernelDensityEstimation(spike_phi, plotPDF_Estimation=True):
     spike_phi = np.array(spike_phi) # Convert the passed list into an array
     spike_phi_2D = np.reshape(spike_phi, (-1, 1)) # The backend requires a 2D array of shape (N, 1), where N is the number of samples
 
+    if np.size(spike_phi_2D) > 1: # If we have greater than 1 spike time then we can do leave-one-out cross-validation
+        print("Optimizing kernel bandwidth on theta cycle {}".format(cycleNumber))
+        bandwidth_space = 10**np.linspace(-1, 1, 100) # Allows bandwidths to take on values between 10**-1 and 10**1
+        grid = GridSearchCV(KernelDensity(kernel='gaussian'), # Optimize prediction accuracy using the SAME kernel as what the KDE will ultimately use (below)
+                                        {'bandwidth': bandwidth_space}, # The bandwidths we'll assess in cross-validation
+                                        cv=LeaveOneOut()) # Cross-validation will 'leave-one-out', i.e. only set asside 1 spike to assess how good the KDE is (since we haven't many spikes to begin with)
+        grid.fit(spike_phi_2D) # Perform the optimization
+        optimal_bandwidth = grid.best_params_['bandwidth'] # Get the optimal bandwidth for the true KDE
+        print("Optimal bandwidth on theta cycle {}: {} Hz".format(cycleNumber, optimal_bandwidth))
 
-    bandwidth_space = 10**np.linspace(-1, 1, 100) # Allows bandwidths to take on values between 10**-1 and 10**1
-    grid = GridSearchCV(KernelDensity(kernel='gaussian'), # Optimize prediction accuracy using the SAME kernel as what the KDE will ultimately use (below)
-                                    {'bandwidth': bandwidth_space}, # The bandwidths we'll assess in cross-validation
-                                    cv=LeaveOneOut()) # Cross-validation will 'leave-one-out', i.e. only set asside 1 spike to assess how good the KDE is (since we haven't many spikes to begin with)
-    grid.fit(spike_phi_2D) # Perform the optimization
-    optimal_bandwidth = grid.best_params_['bandwidth'] # Get the optimal bandwidth for the true KDE
+    else: # Otherwise simply arbitrate the bandwidth, we only call it optimal bandwidth so that it's used in the KernelDensity instantiation (just below)
+        optimal_bandwidth = 1.5 # Generally appears to range from 0.7 to 2.7, no clear relationship between number of spikes and this
+        print("Single spike on theta cycle {} precludes optimization; setting bandwidth at: {}".format(cycleNumber, optimal_bandwidth))
 
     KDE = KernelDensity(bandwidth=optimal_bandwidth, kernel='gaussian') # Instantiate the KDE
     KDE.fit(spike_phi_2D) # Optimize it using the intracycle spike phi
@@ -187,8 +203,11 @@ def kernelDensityEstimation(spike_phi, plotPDF_Estimation=True):
         ax.spines['right'].set_visible(False) # Make the right figure border invisible
 
         ax.plot(phi_interval, np.exp(ln_PDF_estimation), color='deeppink', linewidth=0.8) # Plot the KDE as over interval [0, 2*pi)
-        ax.set_xlabel("$\phi$", fontsize=13) # Label x-axis with intracycle phi
+        ax.set_xlabel("$\phi$ $(radians)$", fontsize=13) # Label x-axis with intracycle phi
         ax.set_ylabel("$Probability$", fontsize=13) # Label y-axis as probability
+
+        xLabelList = [r" ", r"$0$", r"$\frac{1}{3}\pi$", r"$\frac{2}{3}\pi$", r"$\pi$", r"$\frac{4}{3}\pi$", r"$\frac{5}{3}\pi$", r"$2\pi$"] # Label ticks in radians from [0, 2*pi)
+        ax.set_xticklabels(xLabelList) # Set xtick labels as defined in the line above
 
         plt.show() # Reveal the graph
        
@@ -330,7 +349,7 @@ def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_m
                 phi_values = [] # Initialize a list
                 for j in phi_indices: # For each index corresponding to a spike
                     phi_values.append(spike_phi[j]) # Take the spike's phase from spike_phi
-                cycle_phi_central_tendencies.append(kernelDensityEstimation(phi_values, plotPDF_Estimation=plotPDF_Estimation))
+                cycle_phi_central_tendencies.append(kernelDensityEstimation(phi_values, i, plotPDF_Estimation=plotPDF_Estimation))
 
             cycle_start_index = cycle_end_index # The current right boundary index becomes the start of the next theta cycle interval
             
@@ -343,7 +362,7 @@ def cycle_CentralTendency(theta_phase_time_series, spike_phi, central_tendency_m
             phi_values = [] # Initialize a list
             for j in phi_indices: # For each index corresponding to a spike
                 phi_values.append(spike_phi[j]) # Take the spike's phase from spike_phi
-            cycle_phi_central_tendencies.append(kernelDensityEstimation(phi_values, plotPDF_Estimation=plotPDF_Estimation))
+            cycle_phi_central_tendencies.append(kernelDensityEstimation(phi_values, i + 1, plotPDF_Estimation=plotPDF_Estimation))
     
 
     print("intracycle central tendencies: {}".format(cycle_phi_central_tendencies))
@@ -388,6 +407,25 @@ def constructReturnMap(cycle_phi_central_tendencies, darkBackground=False, suppr
             ax.set_ylabel("$\phi_{k}$", fontsize=13, color='w') # y-axis label for current/next (depending on perspective) phi central tendency
 
             plt.show()
+def simulationAnalysis(SimulationObject, thetaRhythm, theta_LFP_shift, central_tendency_mode=0, cycleStart=0, plotPDF_Estimation=True, sim_fig_suppress=False, sim_fig_dark=False, return_map_suppress=False, return_map_dark=False):
+    """
+    This function simply wraps simulation analysis pipeline into a single function, taking a completed LIFNeuron Simulation and theta LFP (plus its vertical shift):
+    1. computePhi() returns phi value of each spike in sequence, the phase time series of theta LFP
+    2. cycle_CentralTendency() takes both outputs from (1.) and returns the intracycle phi central tendency and the boundary indices of each cycle (for plotting purposes)
+        - This function can make use of kernelDensityEstimation() if central_tendency_mode = 3
+    3. Plots the simulation solution figures (if not suppressed) in light/dark background
+    4. Plots the return map figure (if not suppressed) in light/dark background
+    """
+
+    # Compute simulation phi sequence
+    phi_sequence, theta_phase_time_series = computePhi(thetaRhythm, theta_LFP_shift, SimulationObject=SimulationObject)
+
+    # Compute phi central tendencies on each theta cycle and construct return map
+    cycle_phi_central_tendencies, cycle_boundary_indices = cycle_CentralTendency(theta_phase_time_series, phi_sequence, central_tendency_mode=central_tendency_mode, cycleStart=cycleStart, plotPDF_Estimation=plotPDF_Estimation)
+
+    # Plot simulation output and Return map
+    plotSolution(SimulationObject, thetaRhythm, cycle_boundary_indices, darkBackground=sim_fig_dark, suppress=sim_fig_suppress)
+    constructReturnMap(cycle_phi_central_tendencies, darkBackground=return_map_dark, suppress=return_map_suppress)
 
 def main():
     # ========== CONTROL PANEL ======================================================================
@@ -397,16 +435,16 @@ def main():
     sim_duration = 1000 # duration of simulation in ms
     num_timesteps = int(sim_duration/dt) # Infer number of timesteps from simulation length and dt
     rest_Vm = -70 # For LIFNeuron this is the starting and reset potential
-    spike_Vm = 50 # For LIFNeuron this is the spiking potential
+    spike_Vm = 50 # For LIFNeuron this is the spiking potential 
     neuron_threshold = -40 # Whenever LIFNeuron reaches this potential from below the model 'fires' a 'spike'.
     membrane_time_constant = 100
     membrane_resistance = 5
-    absolute_refractory_period = 0 # NOT YET SUPPORTED IN LIFNeuron: the duration of spiking events before returning to rest_Vm
-    parameterDictionary = packageParameters_LIFNeuron(rest_Vm, spike_Vm, neuron_threshold, membrane_time_constant, membrane_resistance, absolute_refractory_period)
+    absolute_refractory_period = 2 # The absolute post-spike refractory period of the neuron (ms)
+    parameterDictionary = packageParameters_LIFNeuron(rest_Vm, spike_Vm, neuron_threshold, membrane_time_constant, membrane_resistance, absolute_refractory_period, dt)
 
     # Analysis Parameters ---------------------------------------------------------------------------
     """ 0 = mean; 1 = median; 2 = mode; 3 = kernel density estimation (KDE); """
-    central_tendency_mode = 2 # The selected measure of intracycle phi central tendency
+    central_tendency_mode = 3 # The selected measure of intracycle phi central tendency
     theta_cycle_boundary_phase = 3*np.pi/2 # This value (in radians) when crossed denotes the beginning of a new cycle; sin(t) default is 3*pi/2; cos(t) default is 0*pi
     suppress_simulation_figure = False
     simulation_figure_dark_background = False
@@ -415,14 +453,17 @@ def main():
     plot_KDE = True
 
     # Forcing Parameters ----------------------------------------------------------------------------
-    omega_theta = 2*np.pi*125**(-1) # Natural (angular) frequency corresponding to hippocampal theta LFP oscillations (radians/ms)
-    omega_interference = 2*np.pi*150**(-1) # Natural (angular) frequency of interloping oscillator (radians/ms)
+    theta_frequency = 12 # In Hz
+    interference_frequency = 12.5 # In Hz
 
-    amplitude_theta = 10.0 # Amplitude of hippocampal theta LFP oscillations (mV)
-    amplitude_interference = 10.0 # Amplitude of interloping oscillator (mV)
+    omega_theta = 2*np.pi*((theta_frequency**-1)*1000)**(-1) # Natural (angular) frequency corresponding to hippocampal theta LFP oscillations (radians/ms); NUMBER IS PERIOD IN ms
+    omega_interference = 2*np.pi*((interference_frequency**-1)*1000)**(-1) # Natural (angular) frequency of interloping oscillator (radians/ms); NUMBER IS PERIOD IN ms
 
-    theta_LFP_shift = amplitude_theta # Theta local field potential shift, corresponds to a vertical translation of the sinusoid
-    interference_LFP_shift = amplitude_interference # Interloping oscillator local field potential shift, corresponds to a vertical translation of the sinusoid
+    amplitude_theta = 70.0 # Amplitude of hippocampal theta LFP oscillations (mV) might be pA
+    amplitude_interference = 70.0 # Amplitude of interloping oscillator (mV)
+
+    theta_LFP_shift = 0 #amplitude_theta # Theta local field potential shift, corresponds to a vertical translation of the sinusoid
+    interference_LFP_shift = 0 #amplitude_interference # Interloping oscillator local field potential shift, corresponds to a vertical translation of the sinusoid
 
     # ========== CREATE FORCING FUNCTIONS ===========================================================
 
@@ -450,15 +491,7 @@ def main():
     NeuronSim = Simulation(Neuron)
     NeuronSim.runSim(fieldOscillation, num_timesteps, dt)
 
-    # Compute simulation phi sequence
-    phi_sequence, theta_phase_time_series = computePhi(thetaRhythm, theta_LFP_shift, SimulationObject=NeuronSim)
-
-    # Compute phi central tendencies on each theta cycle and construct return map
-    cycle_phi_central_tendencies, cycle_boundary_indices = cycle_CentralTendency(theta_phase_time_series, phi_sequence, central_tendency_mode=central_tendency_mode, cycleStart=theta_cycle_boundary_phase, plotPDF_Estimation=plot_KDE)
-
-    # Plot simulation output and Return map
-    plotSolution(NeuronSim, thetaRhythm, cycle_boundary_indices, darkBackground=simulation_figure_dark_background, suppress=suppress_simulation_figure)
-    constructReturnMap(cycle_phi_central_tendencies, darkBackground=return_map_figure_dark_background, suppress=suppress_return_map_figure)
+    simulationAnalysis(NeuronSim, thetaRhythm, theta_LFP_shift, central_tendency_mode=central_tendency_mode, cycleStart=theta_cycle_boundary_phase, plotPDF_Estimation=plot_KDE, sim_fig_suppress=suppress_simulation_figure, sim_fig_dark=simulation_figure_dark_background, return_map_suppress=suppress_return_map_figure, return_map_dark=return_map_figure_dark_background)
 
 if __name__ == "__main__":
     main()
