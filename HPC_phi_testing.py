@@ -1,6 +1,7 @@
 # %%
 import os
 import time
+from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import itertools
@@ -8,6 +9,7 @@ from scipy.signal import hilbert
 from scipy.stats import mode
 from sklearn.neighbors import KernelDensity
 from sklearn.model_selection import GridSearchCV, LeaveOneOut
+from notion.client import NotionClient
 
 # Define the neuron and simulation class objects
 class LIFNeuron:
@@ -495,7 +497,20 @@ def constructReturnMap(cycle_phi_central_tendencies, iteration_number, darkBackg
                 plt.savefig('{}\\HPC_phi\\modelFigures\\returnMaps\\HPC_phi_iteration{}.svg'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), iteration_number), bbox_inches='tight')
         if not suppress:
             plt.show()
-def notionOutput(): # UNDER CONSTRUCTION
+def notionLog(SimulationIterationManager, *vector_strings): # Currently defunct
+    
+    NOTION_TOKEN_V2 = "cc3c22ceca250e380aa6d827e00278f6123eb9f87e0fabc4125a515d62fd28170ba100bb4cecac21bdc773793857d2b125619a5ad92a94d51ca03441b025eb0f1f9e4ae8fa45878cc526990c3bec" # From dev tools; can change with logout
+    NOTION_COLLECTION_URL = "https://www.notion.so/96a9a6d84ad849048d4fd3708e8eac41?v=1b1b92b9169843bc97e34ff3f39942f0" # The database object in the page
+    
+    client = NotionClient(token_v2=NOTION_TOKEN_V2) # open the client using a token (find using Chrome developer console: Application --> Cookies)
+    notionCollection = client.get_collection_view(NOTION_COLLECTION_URL)
+
+    newEntry = notionCollection.collection.add_row()
+    newEntry.Date = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    newEntry.VariableParameters = SimulationIterationManager.parameterNames
+    newEntry.CorrespondingVectors = vector_strings
+    newEntry.Completed = True
+    print("Simulation set logged in Notion")
 
 # Define functions which wrap simulation construction and analysis functions into separate pipelines
 def simulationAnalysis(SimulationObject, thetaRhythm, theta_LFP_shift, iteration_number, central_tendency_mode=0, cycleStart=0, kernel_bandwidth=2, plotPDF_Estimation=True, sim_fig_suppress=False, sim_fig_dark=False, save_sim_fig=True, return_map_suppress=False, return_map_dark=False, save_return_map=True, svg=False, verbose=False):
@@ -576,46 +591,57 @@ def HPC_phi_simulation(**kwargs):
     simulationAnalysis(NeuronSim, thetaRhythm, LFP_shift, iteration_number, central_tendency_mode=central_tendency_mode, cycleStart=theta_cycle_boundary_phase, kernel_bandwidth=kernel_bandwidth, plotPDF_Estimation=KDE_fig_suppress, sim_fig_suppress=sim_fig_suppress, sim_fig_dark=sim_fig_dark, save_sim_fig=save_sim_fig, return_map_suppress=return_map_suppress, return_map_dark=return_map_dark, save_return_map=save_return_map, svg=svg, verbose=verbose)
 
 def main():
-    # ========== CONTROL PANEL ======================================================================
-    
-    # Define model and simulation parameters
+    # ========== CONTROL PANEL =====================================================================================================================================================================
+    NOTION_LOG = False
+                    # Model Parameters
     parameterDict = {'theta_amplitude': 300,                     # Amplitude of theta LFP-induced current (pA)
                      'interference_amplitude': 300,              # Amplitude of interference oscillator LFP-induced current (pA)
                      'theta_frequency': 12,                      # Frequency of theta LFP (Hz)
-                     'interference_frequency': 12,               # Frequency of interference oscillator (Hz)
+                     'interference_frequency': 12.5,               # Frequency of interference oscillator (Hz)
                      'LFP_shift': 0,                             # Vertical translation of both the interference and theta oscillation waveform (pA)
                      'dt': 0.01,                                 # Timestep size (ms)
-                     'simulation_duration': 1000,                # Simulation duration (ms)
+                     'simulation_duration': 20000,                # Simulation duration (ms)
                      'rest_Vm': -75,                             # Resting membrane potential (mV)
                      'spike_Vm': 80,                             # Spike potential (mV)
                      'neuron_threshold': -40,                    # Spiking threshold (mV)
                      'membrane_time_constant': 100,              # Membrane time constant
-                     'membrane_resistance': 1,                   # Membrane resistance (unspecified, scaling factor consolidated to LFP amplitudes)
+                     'membrane_resistance': 1,                   # Membrane resistance (unspecified, this serves merely as a scaling factor for input current and was consolidated to LFP amplitudes)
                      'absolute_refractory_period': 2,            # Absolute minimum interspike interval (ms)
+    # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                    # Analysis Parameters
                      'central_tendency_mode': 3,                 # Select measure of central tendency: 0 = mean, 1 = median, 2 = mode (DEFUNCT), 3 = Kernel density estimation (KDE)
                      'theta_cycle_boundary_phase': 3*np.pi/2,    # Analytic signal-derived phase marking the start of a theta cycle; NOTE: sin(0) + HT(sin(0)) = 0 - 1i
                      'kernel_bandwidth': 1.5,                    # Bandwidth of Gaussian kernel used for intracycle phi estimation when leave-one-out cross validation not viable -- i.e. when only one spike occurred on the cycle 
                      'verbose': False,                           # Whether or not to notify operator of individual spike indices, phi values, central tendencies and KDE progress
-                     'sim_fig_suppress': False,                  # Whether or not to show/save the simulation time series; HARDCODED IN plotSolution() for now
+    # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                    # Figure Parameters
+                     'sim_fig_suppress': True,                  # Whether or not to show/save the simulation time series; HARDCODED IN plotSolution() for now
                      'sim_fig_dark': False,                      # Makes simulation timeseries white on transparent background, suitable for Manim, Notion and dark slide decks -- currently no plt.savefig() in plotSolutions()
                      'save_sim_fig': True,                       # Saves simulation timeseries to directory hardcoded in plotSolutions()
-                     'return_map_suppress': False,               # Whether or not to show/save the simulation time series; HARDCODED IN constructReturnMap() for now
+                     'return_map_suppress': True,               # Whether or not to show/save the simulation time series; HARDCODED IN constructReturnMap() for now
                      'return_map_dark': False,                   # Makes return map white on transparent background, suitable for Manim, Notion and dark slide decks -- currently no plt.savefig() in constructReturnMap()
                      'save_return_map': True,                    # Saves return map to directory hardcoded in constructReturnMap()
                      'KDE_fig_suppress': True,                   # Whether or not to show the estimated probability density function (PDF) over each theta cycle 
-                     'svg': False,                               # Whether or not output figures should be as svg files
+                     'svg': True,                               # Whether or not output figures should be as svg files
                      'iteration_number': 0}                      # Keep track of how many times the model has been run per runTime; mainly for figure naming purposes
+    # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------            
 
     # Create N parameter lists for cartesion product (mesh) iteration
     # NOTE: Enter the parameterDict keys into SimulationIterationManager corresponding to order in which each list is entered
-    vector_1 = list(map(lambda q: q*300, np.linspace(1, 1, 1))) 
-    vector_2 = list(map(lambda q: q*300, np.linspace(1, 1, 1))) 
+    vector_1 = list(map(lambda q: q*300, np.linspace(1, 3, 10)))
+    vector_1_string = 'list(map(lambda q: q*300, np.linspace(1, 3, 10)))'
+    vector_2 = list(map(lambda q: q*300, np.linspace(1, 3, 10))) 
+    vector_2_string = 'list(map(lambda q: q*300, np.linspace(1, 3, 10)))'
 
-    # ========== SIMULATE AND ANALYZE ================================================================
+    # ========== SIMULATE AND ANALYZE ==============================================================================================================================================================
 
-    # Constructs a mesh corresponding to the cartesion product of all parameter sets and their specified keys; NOTE: It is crucial that key and parameter order correspond to one another
+    # Constructs a mesh corresponding to the cartesion product of all parameter sets and their specified keys; NOTE: It is crucial that key and parameter order correspond to one another; Ex. SimulationIterationManager('parameter1', 'parameter2',...,'parameterN', list1, list2,..., listN)
     SimulationSet = SimulationIterationManager(parameterDict, "theta_amplitude", "interference_amplitude", vector_1, vector_2)
     SimulationSet.meshSweep()
+    
+    # This next bit is currently defunct
+    if NOTION_LOG:
+        notionLog(SimulationSet, vector_1_string, vector_2_string)
 
 if __name__ == "__main__":
     main()
