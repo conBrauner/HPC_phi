@@ -174,16 +174,18 @@ class SimulationIterationManager:
             plt.close()
             fig, ax = plt.subplots()
             shading = ax.contourf(self.iterables[0], self.iterables[1], np.transpose(self.output_mesh), cmap='cool', alpha=0.7)
-            level_curves = ax.contour(self.iterables[0], self.iterables[1], np.transpose(self.output_mesh), 15, colors='black')
-            plt.clabel(level_curves, inline=True, fontsize=10)
+            level_curves = ax.contour(self.iterables[0], self.iterables[1], np.transpose(self.output_mesh), [0], colors='black', linewidths=0.9, linestyles='dashed', alpha=0.75)
+            #plt.clabel(level_curves, inline=True, fontsize=10)
             plt.colorbar(shading)
             plt.xlabel(self.parameterNames[0].replace("_", " ") + " " + self.parameterUnits[0])
             plt.ylabel(self.parameterNames[1].replace("_", " ") + " " + self.parameterUnits[1])
 
+            figureObject = plt.gcf()
+
             if self.plot_contour == True:
                 plt.show()
             if self.save_contour_plot == True:
-                plt.savefig('{}\\HPC_phi\\modelFigures\\contourPlots\\HPC_phi_contour_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.contour_plot_file_type), bbox_inches='tight')    
+                figureObject.savefig('{}\\HPC_phi\\modelFigures\\contourPlots\\HPC_phi_contour_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.contour_plot_file_type), bbox_inches='tight')    
         if self.plot_mesh_maps == True or self.save_mesh_fig == True:
             
             line_of_identity = np.linspace(0, 2*np.pi)
@@ -191,6 +193,14 @@ class SimulationIterationManager:
 
             plt.close()
             fig, axes = plt.subplots(nrows=len(self.iterables[1]), ncols=len(self.iterables[0]))
+
+            if axes.shape[0] < 7 and axes.shape[1] < 7:
+                fontSize = 10
+            elif axes.shape[0] < axes.shape[1]:
+                fontSize = 20*(math.log(axes.shape[1]))**-1
+            else:
+                fontSize = 20*(math.log(axes.shape[0]))**-1
+
             fig.patch.set_alpha(0.0)
             for row in axes:
                 for col in row:
@@ -202,8 +212,8 @@ class SimulationIterationManager:
                     phi_K_previous = np.delete(data, -1) # All entries except the Kth one can be the (K - 1)th entry
                     phi_K = np.delete(data, 0) # All entries except the 0th can be the Kth (i.e. next) entry
 
-                    axes[row_number, column_number].scatter(phi_K_previous, phi_K, s=6, color='deeppink')
-                    axes[row_number, column_number].plot(line_of_identity, line_of_identity, linestyle='dashed', color='k', linewidth=0.8) 
+                    axes[row_number, column_number].scatter(phi_K_previous, phi_K, s=32*(self.mesh_size)**-1, color='deeppink')
+                    axes[row_number, column_number].plot(line_of_identity, line_of_identity, linestyle='dashed', color='k', linewidth=0.25) 
                     
                     axes[row_number, column_number].set_xlim([0, 2*np.pi])
                     axes[row_number, column_number].set_ylim([0, 2*np.pi])
@@ -215,17 +225,19 @@ class SimulationIterationManager:
                     axes[row_number, column_number].set_yticks([], minor=True)
 
                     if row_number == len(self.cycle_phi_central_tendencies) - 1:
-                        axes[row_number, column_number].set_xlabel(self.iterables[0][column_number])
+                        axes[row_number, column_number].set_xlabel(int(self.iterables[0][column_number]), fontsize=fontSize)
                     if column_number == 0:
-                        axes[row_number, column_number].set_ylabel(self.iterables[1][- row_number - 1])
+                        axes[row_number, column_number].set_ylabel(int(self.iterables[1][- row_number - 1]), fontsize=fontSize)
             
             fig.text(0.5, 0.02, self.parameterNames[0].replace("_", " ") + " " + self.parameterUnits[0], ha='center')
             fig.text(0.04, 0.5, self.parameterNames[1].replace("_", " ") + " " + self.parameterUnits[1], va='center', rotation='vertical')
 
+            figureObject = plt.gcf()
+
             if self.plot_mesh_maps == True:
                 plt.show()
             if self.save_mesh_fig == True:
-                plt.savefig('{}\\HPC_phi\\modelFigures\\meshFigs\\HPC_phi_meshFig_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.contour_plot_file_type), bbox_inches='tight')
+                figureObject.savefig('{}\\HPC_phi\\modelFigures\\meshFigs\\HPC_phi_meshFig_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.contour_plot_file_type), bbox_inches='tight')
     def meshSweep(self):
         self._initializeOutputArrays()
         if not self.singleIteration:
@@ -244,16 +256,16 @@ class SimulationIterationManager:
                 self.coordinate_mesh[parameter_space_coordinate] = parameter_space_coordinate
 
                 if iteration_number == 0:
-                    print("===== {} m {} s to simulate iteration {} of {} =====".format((time.time() - startTime)/60, ((time.time() - startTime)%60)/1, iteration_number + 1, self.mesh_size))
+                    print("===== {} m {} s to simulate iteration {} of {} =====".format(int((time.time() - startTime)/60), round(((time.time() - startTime)%60)/1, 2), iteration_number + 1, self.mesh_size))
                     simStartTime = time.time()
                 else:
-                    print("===== {} m {} s to simulate iteration {} of {} =====".format((time.time() - simStartTime)/60, ((time.time() - simStartTime)%60)/1, iteration_number + 1, self.mesh_size))
+                    print("===== {} m {} s to simulate iteration {} of {} =====".format(int((time.time() - simStartTime)/60), round(((time.time() - simStartTime)%60)/1, 2), iteration_number + 1, self.mesh_size))
                     simStartTime = time.time()
 
                 iteration_number += 1 # Increment iteration index
 
             print("\n===== ALL ITERATIONS FINISHED =====")
-            print("===== {} m {} s for parameter mesh sweep =====".format((time.time() - startTime)/60, ((time.time() - startTime)%60)/1))
+            print("===== {} m {} s for parameter mesh sweep =====".format(int((time.time() - startTime)/60), round(((time.time() - startTime)%60)/1, 2)))
 
             print('Output mesh: \n{}'.format(np.flipud(np.transpose(self.output_mesh))))
             
@@ -780,10 +792,10 @@ def main():
                     # Figure Parameters
                      'sim_fig_suppress': True,                      # Whether or not to show/save the simulation time series; HARDCODED IN plotSolution() for now
                      'sim_fig_dark': False,                         # Makes simulation timeseries white on transparent background, suitable for Manim, Notion and dark slide decks -- currently no plt.savefig() in plotSolutions()
-                     'save_sim_fig': False,                         # Saves simulation timeseries to directory hardcoded in plotSolutions()
+                     'save_sim_fig': True,                         # Saves simulation timeseries to directory hardcoded in plotSolutions()
                      'return_map_suppress': True,                   # Whether or not to show/save the simulation time series; HARDCODED IN constructReturnMap() for now
                      'return_map_dark': False,                      # Makes return map white on transparent background, suitable for Manim, Notion and dark slide decks -- currently no plt.savefig() in constructReturnMap()
-                     'save_return_map': False,                      # Saves return map to directory hardcoded in constructReturnMap()
+                     'save_return_map': True,                      # Saves return map to directory hardcoded in constructReturnMap()
                      'plot_central_tendency_PDF_estimation': False, # Whether or not to show the estimated probability density function (PDF) over each theta cycle 
                      'plot_return_map_PDF_estimation': False,       # Whether or not to show the estimated probability density function (PDF) over each return map
                      'svg': True,                                   # Whether or not output figures should be as svg files
@@ -798,12 +810,12 @@ def main():
 
     # Create N parameter lists for cartesion product (mesh) iteration
     # NOTE: Enter the parameterDict keys into SimulationIterationManager corresponding to order in which each list is entered
-    vector_1 = list(map(lambda q: 300*q, np.linspace(1, 3, 10)))
-    vector_2 = list(map(lambda q: 300*q, np.linspace(1, 3, 10))) 
+    vector_1 = list(map(lambda q: 12 + q, np.linspace(-3, 3, 10)))
+    vector_2 = list(map(lambda q: 12 + q, np.linspace(-3, 3, 10))) 
 
     # ========== SIMULATE AND ANALYZE ==============================================================================================================================================================
     # Constructs a mesh corresponding to the cartesion product of all parameter sets and their specified keys; NOTE: It is crucial that key and parameter order correspond to one another; Ex. SimulationIterationManager('parameter1', 'parameter2',...,'parameterN', list1, list2,..., listN)
-    SimulationSet = SimulationIterationManager(parameterDict, "theta_amplitude", "interference_amplitude", vector_1, vector_2, "(pA)", "(pA)")
+    SimulationSet = SimulationIterationManager(parameterDict, "theta_frequency", "interference_frequency", vector_1, vector_2, "(Hz)", "(Hz)")
     SimulationSet.meshSweep()
 
 if __name__ == "__main__":
