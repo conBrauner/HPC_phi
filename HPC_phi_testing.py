@@ -163,7 +163,7 @@ class SimulationIterationManager:
         self.output_mesh = np.zeros(mesh_shape) # To contain return map metric at each coordinate
         self.coordinate_mesh = np.zeros(mesh_shape, dtype=(int, len(self.iterables))) # To contain the coordinate at each coordinate
         self.cycle_phi_central_tendencies = np.zeros(mesh_shape, dtype=(list)) # To contain the central tendency of phi on each theta cycle for the simulation at each coordinate
-    def _meshFigs(self):
+    def _meshFigs(self, dpi=300):
         """
         Plots a contour plot indicating the return map metric for each point in a discrete subset of parameter space, provided this subset is 2D.
         Plots a grid of return maps for each point in a discrete subset of parameter space, provided this subset is 2D
@@ -236,8 +236,10 @@ class SimulationIterationManager:
 
             if self.plot_mesh_maps == True:
                 plt.show()
-            if self.save_mesh_fig == True:
-                figureObject.savefig('{}\\HPC_phi\\modelFigures\\meshFigs\\HPC_phi_meshFig_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.contour_plot_file_type), bbox_inches='tight')
+            if self.save_mesh_fig == True and self.mesh_fig_file_type == '.svg':
+                figureObject.savefig('{}\\HPC_phi\\modelFigures\\meshFigs\\HPC_phi_meshFig_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.mesh_fig_file_type), bbox_inches='tight')
+            elif self.save_mesh_fig == True and self.mesh_fig_file_type == '.png':
+                figureObject.savefig('{}\\HPC_phi\\modelFigures\\meshFigs\\HPC_phi_meshFig_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.mesh_fig_file_type), dpi=dpi, bbox_inches='tight')
     def meshSweep(self):
         self._initializeOutputArrays()
         if not self.singleIteration:
@@ -773,7 +775,7 @@ def main():
                      'interference_frequency': 12.5,                # Frequency of interference oscillator (Hz)
                      'LFP_shift': 0,                                # Vertical translation of both the interference and theta oscillation waveform (pA)
                      'dt': 0.01,                                    # Timestep size (ms)
-                     'simulation_duration': 20000,                   # Simulation duration (ms)
+                     'simulation_duration': 1000,                   # Simulation duration (ms)
                      'rest_Vm': -75,                                # Resting membrane potential (mV)
                      'spike_Vm': 80,                                # Spike potential (mV)
                      'neuron_threshold': -40,                       # Spiking threshold (mV)
@@ -792,30 +794,30 @@ def main():
                     # Figure Parameters
                      'sim_fig_suppress': True,                      # Whether or not to show/save the simulation time series; HARDCODED IN plotSolution() for now
                      'sim_fig_dark': False,                         # Makes simulation timeseries white on transparent background, suitable for Manim, Notion and dark slide decks -- currently no plt.savefig() in plotSolutions()
-                     'save_sim_fig': True,                         # Saves simulation timeseries to directory hardcoded in plotSolutions()
+                     'save_sim_fig': False,                         # Saves simulation timeseries to directory hardcoded in plotSolutions()
                      'return_map_suppress': True,                   # Whether or not to show/save the simulation time series; HARDCODED IN constructReturnMap() for now
                      'return_map_dark': False,                      # Makes return map white on transparent background, suitable for Manim, Notion and dark slide decks -- currently no plt.savefig() in constructReturnMap()
-                     'save_return_map': True,                      # Saves return map to directory hardcoded in constructReturnMap()
+                     'save_return_map': False,                      # Saves return map to directory hardcoded in constructReturnMap()
                      'plot_central_tendency_PDF_estimation': False, # Whether or not to show the estimated probability density function (PDF) over each theta cycle 
                      'plot_return_map_PDF_estimation': False,       # Whether or not to show the estimated probability density function (PDF) over each return map
                      'svg': True,                                   # Whether or not output figures should be as svg files
                      'iteration_number': 0,                         # Keep track of how many times the model has been run per runTime; mainly for figure naming purposes
-                     'contour_plot_suppress': True,                 # Whether or not to show the contour plot for a sweep over a 2D discrete subset of parameter space
+                     'contour_plot_suppress': False,                 # Whether or not to show the contour plot for a sweep over a 2D discrete subset of parameter space
                      'save_contour_plot': True,                     # Whether or not to save the contour plot for a sweep over a 2D discrete subset of parameter space
                      'contour_plot_file_type': '.svg',              # String specifying the filetype of the contour plot if it is to be saved
-                     'mesh_fig_suppress': True,                     # Whether or not to show a grid of return maps for a sweep over a 2D discrete subset of parameter space
+                     'mesh_fig_suppress': False,                     # Whether or not to show a grid of return maps for a sweep over a 2D discrete subset of parameter space
                      'save_mesh_fig': True,                         # Whether or not to save a grid of return maps for a sweep over a 2D discrete subset of parameter space
-                     'mesh_fig_file_type': '.svg'}                  # String specifying the filetype of the return map mesh figure if it is to be saved
+                     'mesh_fig_file_type': '.png'}                  # String specifying the filetype of the return map mesh figure if it is to be saved
     # ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------            
 
     # Create N parameter lists for cartesion product (mesh) iteration
     # NOTE: Enter the parameterDict keys into SimulationIterationManager corresponding to order in which each list is entered
-    vector_1 = list(map(lambda q: 12 + q, np.linspace(-3, 3, 10)))
-    vector_2 = list(map(lambda q: 12 + q, np.linspace(-3, 3, 10))) 
+    vector_1 = list(map(lambda q: q*300, np.linspace(1, 3, 3)))
+    vector_2 = list(map(lambda q: q*300, np.linspace(1, 3, 3))) 
 
     # ========== SIMULATE AND ANALYZE ==============================================================================================================================================================
     # Constructs a mesh corresponding to the cartesion product of all parameter sets and their specified keys; NOTE: It is crucial that key and parameter order correspond to one another; Ex. SimulationIterationManager('parameter1', 'parameter2',...,'parameterN', list1, list2,..., listN)
-    SimulationSet = SimulationIterationManager(parameterDict, "theta_frequency", "interference_frequency", vector_1, vector_2, "(Hz)", "(Hz)")
+    SimulationSet = SimulationIterationManager(parameterDict, "theta_amplitude", "interference_amplitude", vector_1, vector_2, "(pA)", "(pA)")
     SimulationSet.meshSweep()
 
 if __name__ == "__main__":
