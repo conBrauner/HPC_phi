@@ -19,29 +19,29 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   syntax='proto3',
   serialized_options=None,
   create_key=_descriptor._internal_create_key,
-  serialized_pb=b'\n\x16HPC_phi_sim_data.proto\x12\x10SavedSimulations\"\xbb\x01\n\x0eSimulationData\x12G\n\tparameter\x18\x01 \x03(\x0b\x32\x34.SavedSimulations.SimulationData.ParameterFieldEntry\x12\x11\n\tspike_phi\x18\x02 \x03(\x02\x1aM\n\x13ParameterFieldEntry\x12\x10\n\x03key\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x12\n\x05value\x18\x02 \x01(\x02H\x01\x88\x01\x01\x42\x06\n\x04_keyB\x08\n\x06_valueb\x06proto3'
+  serialized_pb=b'\n\x16HPC_phi_sim_data.proto\x12\x10SavedSimulations\"\xb1\x05\n\x0eSimulationData\x12\x43\n\nparameters\x18\x01 \x03(\x0b\x32/.SavedSimulations.SimulationData.InputParameter\x12I\n\rinput_rhythms\x18\x02 \x01(\x0b\x32-.SavedSimulations.SimulationData.InputRhythmsH\x00\x88\x01\x01\x12X\n\x15raw_simulation_output\x18\x03 \x01(\x0b\x32\x34.SavedSimulations.SimulationData.RawSimulationOutputH\x01\x88\x01\x01\x12`\n\x19refined_simulation_output\x18\x04 \x01(\x0b\x32\x38.SavedSimulations.SimulationData.RefinedSimulationOutputH\x02\x88\x01\x01\x1aH\n\x0eInputParameter\x12\x10\n\x03key\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x12\n\x05value\x18\x02 \x01(\x02H\x01\x88\x01\x01\x42\x06\n\x04_keyB\x08\n\x06_value\x1a\x44\n\x0cInputRhythms\x12\x14\n\x0ctheta_rhythm\x18\x01 \x03(\x02\x12\x1e\n\x16\x64ual_oscillator_rhythm\x18\x02 \x03(\x02\x1a\x36\n\x13RawSimulationOutput\x12\x11\n\ttime_axis\x18\x01 \x03(\x02\x12\x0c\n\x04Vm_t\x18\x02 \x03(\x02\x1a\x41\n\x17RefinedSimulationOutput\x12\x11\n\tspike_phi\x18\x01 \x03(\x02\x12\x13\n\x0btheta_phase\x18\x02 \x03(\x02\x42\x10\n\x0e_input_rhythmsB\x18\n\x16_raw_simulation_outputB\x1c\n\x1a_refined_simulation_outputb\x06proto3'
 )
 
 
 
 
-_SIMULATIONDATA_PARAMETERFIELDENTRY = _descriptor.Descriptor(
-  name='ParameterFieldEntry',
-  full_name='SavedSimulations.SimulationData.ParameterFieldEntry',
+_SIMULATIONDATA_INPUTPARAMETER = _descriptor.Descriptor(
+  name='InputParameter',
+  full_name='SavedSimulations.SimulationData.InputParameter',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   create_key=_descriptor._internal_create_key,
   fields=[
     _descriptor.FieldDescriptor(
-      name='key', full_name='SavedSimulations.SimulationData.ParameterFieldEntry.key', index=0,
+      name='key', full_name='SavedSimulations.SimulationData.InputParameter.key', index=0,
       number=1, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
     _descriptor.FieldDescriptor(
-      name='value', full_name='SavedSimulations.SimulationData.ParameterFieldEntry.value', index=1,
+      name='value', full_name='SavedSimulations.SimulationData.InputParameter.value', index=1,
       number=2, type=2, cpp_type=6, label=1,
       has_default_value=False, default_value=float(0),
       message_type=None, enum_type=None, containing_type=None,
@@ -59,18 +59,132 @@ _SIMULATIONDATA_PARAMETERFIELDENTRY = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
     _descriptor.OneofDescriptor(
-      name='_key', full_name='SavedSimulations.SimulationData.ParameterFieldEntry._key',
+      name='_key', full_name='SavedSimulations.SimulationData.InputParameter._key',
       index=0, containing_type=None,
       create_key=_descriptor._internal_create_key,
     fields=[]),
     _descriptor.OneofDescriptor(
-      name='_value', full_name='SavedSimulations.SimulationData.ParameterFieldEntry._value',
+      name='_value', full_name='SavedSimulations.SimulationData.InputParameter._value',
       index=1, containing_type=None,
       create_key=_descriptor._internal_create_key,
     fields=[]),
   ],
-  serialized_start=155,
-  serialized_end=232,
+  serialized_start=395,
+  serialized_end=467,
+)
+
+_SIMULATIONDATA_INPUTRHYTHMS = _descriptor.Descriptor(
+  name='InputRhythms',
+  full_name='SavedSimulations.SimulationData.InputRhythms',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  create_key=_descriptor._internal_create_key,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='theta_rhythm', full_name='SavedSimulations.SimulationData.InputRhythms.theta_rhythm', index=0,
+      number=1, type=2, cpp_type=6, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='dual_oscillator_rhythm', full_name='SavedSimulations.SimulationData.InputRhythms.dual_oscillator_rhythm', index=1,
+      number=2, type=2, cpp_type=6, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=469,
+  serialized_end=537,
+)
+
+_SIMULATIONDATA_RAWSIMULATIONOUTPUT = _descriptor.Descriptor(
+  name='RawSimulationOutput',
+  full_name='SavedSimulations.SimulationData.RawSimulationOutput',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  create_key=_descriptor._internal_create_key,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='time_axis', full_name='SavedSimulations.SimulationData.RawSimulationOutput.time_axis', index=0,
+      number=1, type=2, cpp_type=6, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='Vm_t', full_name='SavedSimulations.SimulationData.RawSimulationOutput.Vm_t', index=1,
+      number=2, type=2, cpp_type=6, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=539,
+  serialized_end=593,
+)
+
+_SIMULATIONDATA_REFINEDSIMULATIONOUTPUT = _descriptor.Descriptor(
+  name='RefinedSimulationOutput',
+  full_name='SavedSimulations.SimulationData.RefinedSimulationOutput',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  create_key=_descriptor._internal_create_key,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='spike_phi', full_name='SavedSimulations.SimulationData.RefinedSimulationOutput.spike_phi', index=0,
+      number=1, type=2, cpp_type=6, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='theta_phase', full_name='SavedSimulations.SimulationData.RefinedSimulationOutput.theta_phase', index=1,
+      number=2, type=2, cpp_type=6, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=595,
+  serialized_end=660,
 )
 
 _SIMULATIONDATA = _descriptor.Descriptor(
@@ -82,23 +196,37 @@ _SIMULATIONDATA = _descriptor.Descriptor(
   create_key=_descriptor._internal_create_key,
   fields=[
     _descriptor.FieldDescriptor(
-      name='parameter', full_name='SavedSimulations.SimulationData.parameter', index=0,
+      name='parameters', full_name='SavedSimulations.SimulationData.parameters', index=0,
       number=1, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
     _descriptor.FieldDescriptor(
-      name='spike_phi', full_name='SavedSimulations.SimulationData.spike_phi', index=1,
-      number=2, type=2, cpp_type=6, label=3,
-      has_default_value=False, default_value=[],
+      name='input_rhythms', full_name='SavedSimulations.SimulationData.input_rhythms', index=1,
+      number=2, type=11, cpp_type=10, label=1,
+      has_default_value=False, default_value=None,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='raw_simulation_output', full_name='SavedSimulations.SimulationData.raw_simulation_output', index=2,
+      number=3, type=11, cpp_type=10, label=1,
+      has_default_value=False, default_value=None,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
+    _descriptor.FieldDescriptor(
+      name='refined_simulation_output', full_name='SavedSimulations.SimulationData.refined_simulation_output', index=3,
+      number=4, type=11, cpp_type=10, label=1,
+      has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
   ],
   extensions=[
   ],
-  nested_types=[_SIMULATIONDATA_PARAMETERFIELDENTRY, ],
+  nested_types=[_SIMULATIONDATA_INPUTPARAMETER, _SIMULATIONDATA_INPUTRHYTHMS, _SIMULATIONDATA_RAWSIMULATIONOUTPUT, _SIMULATIONDATA_REFINEDSIMULATIONOUTPUT, ],
   enum_types=[
   ],
   serialized_options=None,
@@ -106,28 +234,79 @@ _SIMULATIONDATA = _descriptor.Descriptor(
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
+    _descriptor.OneofDescriptor(
+      name='_input_rhythms', full_name='SavedSimulations.SimulationData._input_rhythms',
+      index=0, containing_type=None,
+      create_key=_descriptor._internal_create_key,
+    fields=[]),
+    _descriptor.OneofDescriptor(
+      name='_raw_simulation_output', full_name='SavedSimulations.SimulationData._raw_simulation_output',
+      index=1, containing_type=None,
+      create_key=_descriptor._internal_create_key,
+    fields=[]),
+    _descriptor.OneofDescriptor(
+      name='_refined_simulation_output', full_name='SavedSimulations.SimulationData._refined_simulation_output',
+      index=2, containing_type=None,
+      create_key=_descriptor._internal_create_key,
+    fields=[]),
   ],
   serialized_start=45,
-  serialized_end=232,
+  serialized_end=734,
 )
 
-_SIMULATIONDATA_PARAMETERFIELDENTRY.containing_type = _SIMULATIONDATA
-_SIMULATIONDATA_PARAMETERFIELDENTRY.oneofs_by_name['_key'].fields.append(
-  _SIMULATIONDATA_PARAMETERFIELDENTRY.fields_by_name['key'])
-_SIMULATIONDATA_PARAMETERFIELDENTRY.fields_by_name['key'].containing_oneof = _SIMULATIONDATA_PARAMETERFIELDENTRY.oneofs_by_name['_key']
-_SIMULATIONDATA_PARAMETERFIELDENTRY.oneofs_by_name['_value'].fields.append(
-  _SIMULATIONDATA_PARAMETERFIELDENTRY.fields_by_name['value'])
-_SIMULATIONDATA_PARAMETERFIELDENTRY.fields_by_name['value'].containing_oneof = _SIMULATIONDATA_PARAMETERFIELDENTRY.oneofs_by_name['_value']
-_SIMULATIONDATA.fields_by_name['parameter'].message_type = _SIMULATIONDATA_PARAMETERFIELDENTRY
+_SIMULATIONDATA_INPUTPARAMETER.containing_type = _SIMULATIONDATA
+_SIMULATIONDATA_INPUTPARAMETER.oneofs_by_name['_key'].fields.append(
+  _SIMULATIONDATA_INPUTPARAMETER.fields_by_name['key'])
+_SIMULATIONDATA_INPUTPARAMETER.fields_by_name['key'].containing_oneof = _SIMULATIONDATA_INPUTPARAMETER.oneofs_by_name['_key']
+_SIMULATIONDATA_INPUTPARAMETER.oneofs_by_name['_value'].fields.append(
+  _SIMULATIONDATA_INPUTPARAMETER.fields_by_name['value'])
+_SIMULATIONDATA_INPUTPARAMETER.fields_by_name['value'].containing_oneof = _SIMULATIONDATA_INPUTPARAMETER.oneofs_by_name['_value']
+_SIMULATIONDATA_INPUTRHYTHMS.containing_type = _SIMULATIONDATA
+_SIMULATIONDATA_RAWSIMULATIONOUTPUT.containing_type = _SIMULATIONDATA
+_SIMULATIONDATA_REFINEDSIMULATIONOUTPUT.containing_type = _SIMULATIONDATA
+_SIMULATIONDATA.fields_by_name['parameters'].message_type = _SIMULATIONDATA_INPUTPARAMETER
+_SIMULATIONDATA.fields_by_name['input_rhythms'].message_type = _SIMULATIONDATA_INPUTRHYTHMS
+_SIMULATIONDATA.fields_by_name['raw_simulation_output'].message_type = _SIMULATIONDATA_RAWSIMULATIONOUTPUT
+_SIMULATIONDATA.fields_by_name['refined_simulation_output'].message_type = _SIMULATIONDATA_REFINEDSIMULATIONOUTPUT
+_SIMULATIONDATA.oneofs_by_name['_input_rhythms'].fields.append(
+  _SIMULATIONDATA.fields_by_name['input_rhythms'])
+_SIMULATIONDATA.fields_by_name['input_rhythms'].containing_oneof = _SIMULATIONDATA.oneofs_by_name['_input_rhythms']
+_SIMULATIONDATA.oneofs_by_name['_raw_simulation_output'].fields.append(
+  _SIMULATIONDATA.fields_by_name['raw_simulation_output'])
+_SIMULATIONDATA.fields_by_name['raw_simulation_output'].containing_oneof = _SIMULATIONDATA.oneofs_by_name['_raw_simulation_output']
+_SIMULATIONDATA.oneofs_by_name['_refined_simulation_output'].fields.append(
+  _SIMULATIONDATA.fields_by_name['refined_simulation_output'])
+_SIMULATIONDATA.fields_by_name['refined_simulation_output'].containing_oneof = _SIMULATIONDATA.oneofs_by_name['_refined_simulation_output']
 DESCRIPTOR.message_types_by_name['SimulationData'] = _SIMULATIONDATA
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
 SimulationData = _reflection.GeneratedProtocolMessageType('SimulationData', (_message.Message,), {
 
-  'ParameterFieldEntry' : _reflection.GeneratedProtocolMessageType('ParameterFieldEntry', (_message.Message,), {
-    'DESCRIPTOR' : _SIMULATIONDATA_PARAMETERFIELDENTRY,
+  'InputParameter' : _reflection.GeneratedProtocolMessageType('InputParameter', (_message.Message,), {
+    'DESCRIPTOR' : _SIMULATIONDATA_INPUTPARAMETER,
     '__module__' : 'HPC_phi_sim_data_pb2'
-    # @@protoc_insertion_point(class_scope:SavedSimulations.SimulationData.ParameterFieldEntry)
+    # @@protoc_insertion_point(class_scope:SavedSimulations.SimulationData.InputParameter)
+    })
+  ,
+
+  'InputRhythms' : _reflection.GeneratedProtocolMessageType('InputRhythms', (_message.Message,), {
+    'DESCRIPTOR' : _SIMULATIONDATA_INPUTRHYTHMS,
+    '__module__' : 'HPC_phi_sim_data_pb2'
+    # @@protoc_insertion_point(class_scope:SavedSimulations.SimulationData.InputRhythms)
+    })
+  ,
+
+  'RawSimulationOutput' : _reflection.GeneratedProtocolMessageType('RawSimulationOutput', (_message.Message,), {
+    'DESCRIPTOR' : _SIMULATIONDATA_RAWSIMULATIONOUTPUT,
+    '__module__' : 'HPC_phi_sim_data_pb2'
+    # @@protoc_insertion_point(class_scope:SavedSimulations.SimulationData.RawSimulationOutput)
+    })
+  ,
+
+  'RefinedSimulationOutput' : _reflection.GeneratedProtocolMessageType('RefinedSimulationOutput', (_message.Message,), {
+    'DESCRIPTOR' : _SIMULATIONDATA_REFINEDSIMULATIONOUTPUT,
+    '__module__' : 'HPC_phi_sim_data_pb2'
+    # @@protoc_insertion_point(class_scope:SavedSimulations.SimulationData.RefinedSimulationOutput)
     })
   ,
   'DESCRIPTOR' : _SIMULATIONDATA,
@@ -135,7 +314,10 @@ SimulationData = _reflection.GeneratedProtocolMessageType('SimulationData', (_me
   # @@protoc_insertion_point(class_scope:SavedSimulations.SimulationData)
   })
 _sym_db.RegisterMessage(SimulationData)
-_sym_db.RegisterMessage(SimulationData.ParameterFieldEntry)
+_sym_db.RegisterMessage(SimulationData.InputParameter)
+_sym_db.RegisterMessage(SimulationData.InputRhythms)
+_sym_db.RegisterMessage(SimulationData.RawSimulationOutput)
+_sym_db.RegisterMessage(SimulationData.RefinedSimulationOutput)
 
 
 # @@protoc_insertion_point(module_scope)

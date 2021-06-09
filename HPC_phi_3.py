@@ -1,11 +1,11 @@
 # Standard library imports
 from datetime import date
+from functools import reduce
 import itertools
 import math
 import numpy as np
 import os
 from pathlib import Path
-import sys
 import time
 
 # Third party imports
@@ -19,89 +19,123 @@ from sklearn.model_selection import GridSearchCV, LeaveOneOut
 from HPC_phi_sim_data_pb2 import SimulationData as ProtoBufferInterface
 
 class InputSpecifications():
+    """Class object primarily serves as a vehicle for all 'input' parameters (those controlling simulation and analysis) by initializing with attributes corresponding to an input dictionary.
+
+    This object's attributes are directly inherited by SimulationIterationManager. The purpose of this initial object is to serve as a separate space for adjusting input parameters.
+    """
 
     def __init__(self, **kwargs) -> None:
-        self.__dict__.update(kwargs)
-        self.parameter_subspace_names = []
-        self.parameter_subspaces = []
-        self.sealed = False
 
-    def newParameterSubspace(self, name:str, lambda_function, start:int, stop:int, number_elements:int):
+        # Assign attributes corresponding to each kwarg from a dictionary
+        self.__dict__.update(kwargs)
+
+        # Initialize attributes controlling variable parameters
+        self.parameter_subspace_names = [] 
+        self.parameter_subspace_units = []
+        self.parameter_subspaces = []
+        self.sealed = False # True prohibits addition of new variables over current runtime
+
+    def newParameterSubspace(self, name:str, units:str, lambda_function, start:int, stop:int, number_elements:int):
+
+        # Identifies variable parameters by their attribute (str) and appends a vector of parameters to iterate over
         self.parameter_subspace_names.append(name)
-        self.parameter_subspaces.append(list(map(lambda_function, np.linspace(start, stop, number_elements))))
+        self.parameter_subspace_units.append(units)
+        self.parameter_subspaces.append(list(map(lambda_function, np.linspace(start, stop, number_elements)))) # Map a linspace vector to a list by some lambda function
     
     def sealParameterSubspace(self):
+
+        # If the subspace isn't sealed then zip vector list to the list with the corresponding parameter name
         if not self.sealed:
             self.sealed_parameter_subspace = zip(self.parameter_subspace_names, self.parameter_subspaces)
             self.sealed = True
         else:
             pass
 class OutputSpecifications():
+    """Class object primarily serves as a vehicle for all 'output' parameters (those controlling figures and serialization) by initializing with attributes corresponding to an input dictionary.
+
+    This object's attributes are directly inherited by SimulationIterationManager. The purpose of this initial object is to serve as a separate space for adjusting output parameters.
+    """
 
     def __init__(self, **kwargs) -> None:
         self.__dict__.update(kwargs)
 class SimulationIterationManager():
+    """Highest level organization for execution, analysis, output and serialization of simulation. Passes itself through a pipeline for organized distribution of parameters and arguments.
+
+    Inherits attributes from InputSpecifications and OutputSpecifications objects. Generates output tensors with shape according to the number and size of parameter subspaces. Iterates over a 
+    complete parameter subspace and executes a simulation at each coordinate. Another method allows user to decode serialized simulation data using a protocol buffer to test alternative
+    analysis subroutines. If exactly two linear subspaces are identified then a contour plot and meshfigure are generated to summarize a simulation output.
+    """
 
     def __init__(self, InputSpecifications, OutputSpecifications):
         self.__dict__.update(InputSpecifications.__dict__)
         self.__dict__.update(OutputSpecifications.__dict__)
         self.iteration_number = 0
 
-    def initializeOutputArrays(self):
+    def initializeOutputArrays(self, fromProtobuf=False):
 
-        mesh_shape = tuple(map(lambda x: len(x), self.parameter_subspaces)) # maps the length of the ith iterable to the ith index of a tuple; specifies the shape of output tensors
+        if not fromProtobuf:
+            # Output tensor will have shape corresponding to the ordered sizes of parameter subspaces.
+            mesh_shape = tuple(map(lambda x: len(x), self.parameter_subspaces)) # maps the length of the ith iterable to the ith index of a tuple; specifies the shape of output tensors
+            
+            self.dimension_lengths = list(mesh_shape) 
+            self.mesh_size = reduce(lambda x, y: x*y, self.dimension_lengths) # Reduce has the effect of multiplying all entries and outputting a scalar; indicates total number of simulations
 
-        self.dimension_lengths = [] # Will contain the shape of the parameter mesh
-        self.mesh_size = 1 # Initialize with the identity
+            if self.mesh_size == 1:
+                self.single_iteration = True
+            else:
+                self.single_iteration = False
 
-        for dimension in self.parameter_subspaces: # For each parameter to iterate over
-                self.dimension_lengths.append(len(dimension)) # Take it's length to correspond to the shape in it's dimension
-                self.mesh_size *= len(dimension) # The total number of coordinates in parameter space is the product of all axis lengths
-
-        if self.mesh_size == 1:
-            self.single_iteration = True
+            self.output_mesh = np.zeros(mesh_shape) # To contain return map metric at each coordinate
+            self.coordinate_mesh = np.zeros(mesh_shape, dtype=(int, len(self.parameter_subspaces))) # To contain the coordinate at each coordinate
+            self.cycle_phi_central_tendencies = np.zeros(mesh_shape, dtype=(list)) # To contain the central tendency of phi on each theta cycle for the simulation at each coordinate
+        
         else:
-            self.single_iteration = False
-
-        self.output_mesh = np.zeros(mesh_shape) # To contain return map metric at each coordinate
-        self.coordinate_mesh = np.zeros(mesh_shape, dtype=(int, len(self.parameter_subspaces))) # To contain the coordinate at each coordinate
-        self.cycle_phi_central_tendencies = np.zeros(mesh_shape, dtype=(list)) # To contain the central tendency of phi on each theta cycle for the simulation at each coordinate
+            self.output_list = []
+            self.cycle_phi_central_tendencies = []
 
     def generateMeshFigures(self):
 
-        if self.plot_contour == True or self.save_contour_plot == True:
+        if self.contour_plot_suppress == False or self.save_contour_plot == True:
 
             plt.close()
+
             fig, ax = plt.subplots()
-            shading = ax.contourf(self.parameter_subspaces[0], self.parameter_subspaces[1], np.transpose(self.output_mesh), cmap='cool', alpha=0.7)
-            ax.contour(self.parameter_subspaces[0], self.parameter_subspaces[1], np.transpose(self.output_mesh), [0], colors='black', linewidths=0.9, linestyles='dashed', alpha=0.75)
+
+            # Generate contour plot
+            shading = ax.contourf(self.parameter_subspaces[0], self.parameter_subspaces[1], np.transpose(self.output_mesh), cmap='cool', alpha=0.7) # Colour gradients in background
+            ax.contour(self.parameter_subspaces[0], self.parameter_subspaces[1], np.transpose(self.output_mesh), [0], colors='black', linewidths=0.9, linestyles='dashed', alpha=0.75) # Lines indicating sea level; i.e. phase-locking
             plt.colorbar(shading)
-            plt.xlabel(self.parameterNames[0].replace("_", " ") + " " + self.parameterUnits[0])
-            plt.ylabel(self.parameterNames[1].replace("_", " ") + " " + self.parameterUnits[1])
+
+            # Parameter subspace names and units specified at newParameterSubspace() call
+            plt.xlabel(self.parameter_subspace_names[0].replace("_", " ") + " " + self.parameter_subspace_units[0]) 
+            plt.ylabel(self.parameter_subspace_names[1].replace("_", " ") + " " + self.parameter_subspace_units[1])
 
             figureObject = plt.gcf()
 
-            if self.plot_contour == True:
+            if self.contour_plot_suppress == False:
                 plt.show()
             if self.save_contour_plot == True:
-                figureObject.savefig('{}\\HPC_phi\\modelFigures\\contourPlots\\HPC_phi_contour_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.contour_plot_file_type), bbox_inches='tight')  
+                figureObject.savefig(Path('/'.join([self.saved_figure_path, 'contourPlots', 'HPC_phi_contour_{}{}{}'.format(date.today().day, date.today().month, self.contour_plot_file_type)])), dpi=self.dpi, bbox_inches='tight')  
 
-        if self.plot_mesh_maps == True or self.save_mesh_fig == True:
+        if self.mesh_fig_suppress == False or self.save_mesh_fig == True:
             
-            line_of_identity = np.linspace(0, 2*np.pi)
-            self.cycle_phi_central_tendencies = np.flipud(np.transpose(self.cycle_phi_central_tendencies))
+            line_of_identity = np.linspace(0, 2*np.pi) # Line of phase locking to be plotted in each subfigure
+            self.cycle_phi_central_tendencies = np.flipud(np.transpose(self.cycle_phi_central_tendencies)) # Transpose the grid, then reflect in horizontal axis
 
             plt.close()
-            fig, axes = plt.subplots(nrows=len(self.parameter_subspaces[1]), ncols=len(self.parameter_subspaces[0]))
 
+            fig, axes = plt.subplots(nrows=len(self.parameter_subspaces[1]), ncols=len(self.parameter_subspaces[0]))
+            fig.patch.set_alpha(0.0)
+
+            # For small axis sizes, set fontsize = 10, otherwise set fontsize = 20/ln(size(largest_subspace))
             if axes.shape[0] < 7 and axes.shape[1] < 7:
                 fontSize = 10
             elif axes.shape[0] < axes.shape[1]:
                 fontSize = 20*(math.log(axes.shape[1]))**-1
             else:
                 fontSize = 20*(math.log(axes.shape[0]))**-1
-
-            fig.patch.set_alpha(0.0)
+            
+            # Make the right and top figure border for each subfigure invisible
             for row in axes:
                 for col in row:
                     col.spines['top'].set_visible(False)
@@ -109,6 +143,7 @@ class SimulationIterationManager():
 
             for row_number, row in enumerate(self.cycle_phi_central_tendencies, start=0):
                 for column_number, data in enumerate(row, start=0):
+
                     phi_K_previous = np.delete(data, -1) # All entries except the Kth one can be the (K - 1)th entry
                     phi_K = np.delete(data, 0) # All entries except the 0th can be the Kth (i.e. next) entry
 
@@ -129,215 +164,354 @@ class SimulationIterationManager():
                     if column_number == 0:
                         axes[row_number, column_number].set_ylabel(int(self.parameter_subspaces[1][- row_number - 1]), fontsize=fontSize)
             
-            fig.text(0.5, 0.02, self.parameterNames[0].replace("_", " ") + " " + self.parameterUnits[0], ha='center')
-            fig.text(0.04, 0.5, self.parameterNames[1].replace("_", " ") + " " + self.parameterUnits[1], va='center', rotation='vertical')
+            fig.text(0.5, 0.02, self.parameter_subspace_names[0].replace("_", " ") + " " + self.parameter_subspace_units[0], ha='center')
+            fig.text(0.04, 0.5, self.parameter_subspace_names[1].replace("_", " ") + " " + self.parameter_subspace_units[1], va='center', rotation='vertical')
 
             figureObject = plt.gcf()
 
-            if self.plot_mesh_maps == True:
+            if self.mesh_fig_suppress == False:
                 plt.show()
-            if self.save_mesh_fig == True and self.mesh_fig_file_type == '.svg':
-                figureObject.savefig('{}\\HPC_phi\\modelFigures\\meshFigs\\HPC_phi_meshFig_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.mesh_fig_file_type), bbox_inches='tight')
-            elif self.save_mesh_fig == True and self.mesh_fig_file_type == '.png':
-                figureObject.savefig('{}\\HPC_phi\\modelFigures\\meshFigs\\HPC_phi_meshFig_{}{}{}'.format(os.path.dirname(os.path.realpath("modelFigures")).encode('unicode-escape').decode(), date.today().month, date.today().day, self.mesh_fig_file_type), dpi=self.dpi, bbox_inches='tight')
+            if self.save_mesh_fig == True:
+                figureObject.savefig(Path('/'.join([self.saved_figure_path, 'meshFigs', 'HPC_phi_meshFig_{}{}{}'.format(date.today().day, date.today().month, self.mesh_fig_file_type)])), dpi=self.dpi, bbox_inches='tight')
     
-    def generateProtoBufferFilename(self, update_filename=False): 
+    def updateEncodePath(self, update_filename=False): 
+        """Generates string filename for serialized data according to format: 
         
+        _<parameter_1>_<parameter_2>_..._<parameter_n>_initialParam_1_finalParam_1_subspaceSize_1_initialParam_2_finalParam_2_subspaceSize_2_..._initialParam_n_finalParam_n_subspaceSize_n_ddmmyyyy_iteration_number.pb.bin
+        Which looks disgusting but is, in fact, exactly as descriptive as is needed for easy loading and (in the future) using string formatting to load large swathes of saved data.
+        """
+
+        # If there is no preexisting filename to simply modify
         if not update_filename:  
 
             self.proto_buffer_filename = ""
 
+            # Add all parameter subspace names
             for parameter_name in self.parameter_subspace_names:
                 self.proto_buffer_filename = '_'.join([self.proto_buffer_filename, parameter_name])
 
+            # Add all parameter subspace maxes, mins, sizes
             for vector in self.parameter_subspaces:
                 self.proto_buffer_filename = '_'.join([self.proto_buffer_filename, str(int(vector[0])), str(int(vector[-1])), str(len(vector))])
             
+            # Add date information, iteration number and .pb.bin extension
             d = date.today()
             self.proto_buffer_filename = '_'.join([self.proto_buffer_filename, "{:02d}{:02d}{:02d}".format(d.day, d.month, d.year)])
             self.proto_buffer_filename = '_'.join([self.proto_buffer_filename, "{}.pb.bin".format(self.iteration_number)])
 
+            # Update the protocol buffer encode path with the new filename
             self.protobuf_encode_path = Path('/'.join([self.protobuf_serialized_data_path, self.proto_buffer_filename]))
 
+        # If a filename has been previously specified over runtime
         else:
-
+            
+            # Split by underscore
             underscore_separated_segments = self.proto_buffer_filename.split('_')
+
+            # Split by periods
             period_separated_segments = underscore_separated_segments[-1].split('.')
+
+            # The first element is the iteration number -- update it
             period_separated_segments[0] = str(self.iteration_number)
 
+            # Recombine segments separated by period
             recombined_period_separated_segments = '.'.join(period_separated_segments)
+
+            # Append period-separated segments to underscore separated segments
             underscore_separated_segments[-1] = recombined_period_separated_segments
 
+            # Recombine segments separated by underscore
             self.proto_buffer_filename = '_'.join(underscore_separated_segments)
 
+            # Update the protocol buffer encode path with the new filename
             self.protobuf_encode_path = Path('/'.join([self.protobuf_serialized_data_path, self.proto_buffer_filename]))
             
     def meshSweep(self):
-
+        
+        # Initialize output tensors 
         self.initializeOutputArrays()
 
-        self.generateProtoBufferFilename(update_filename=False)
+        # Initialize a protocol buffer filename and encode path
+        self.updateEncodePath(update_filename=False)
 
+        # If the full parameter subspace has size > 1
         if not self.single_iteration:
-
-            if self.iteration_number != 0:
-                self.generateProtoBufferFilename(update_filename=True)
 
             self.overall_start_time = time.time()
 
+            # Generate a list of coordinates corresponding to the index of each parameter subspace 
             parameterMesh = itertools.product(*[range(s) for s in self.dimension_lengths])
+            
+            # Iteratively simulate
             for parameter_space_coordinate in parameterMesh: 
+                for dimension, subspace_index in enumerate(parameter_space_coordinate, start=0): # Coordinate index corresponds to single parameter subspace
 
-                for dimension, subspace_index in enumerate(parameter_space_coordinate): 
+                    self.__dict__.update({self.parameter_subspace_names[dimension]: self.parameter_subspaces[dimension][subspace_index]}) # Update parameter 
+                
+                # Update protocol buffer filename and encode path on second and subsequent iterations
+                if self.iteration_number != 0:
+                    self.updateEncodePath(update_filename=True)
 
-                    self.__dict__.update({self.parameter_subspace_names[dimension]: self.parameter_subspaces[dimension][subspace_index]}) 
-
+                # Execute the simulation and populate output tensors for the current parameter set
                 self.coordinate_mesh[parameter_space_coordinate] = parameter_space_coordinate
                 self.output_mesh[parameter_space_coordinate], self.cycle_phi_central_tendencies[parameter_space_coordinate] = HPC_phi_simulation(self, execute_simulation=True) 
 
+                # On the first iteration use the overall_start_time to report progress
                 if self.iteration_number == 0:
                     print("===== {} m {} s to simulate iteration {} of {} =====".format(int((time.time() - self.overall_start_time)/60), round(((time.time() - self.overall_start_time)%60)/1, 2), self.iteration_number + 1, self.mesh_size))
-                    subsequent_simulation_start_time = time.time()
+                    subsequent_simulation_start_time = time.time() # Initialize a new timer for the second simulation
+                
+                # On subsequent iterations use and then reset the second timer to report progress
                 else:
                     print("===== {} m {} s to simulate iteration {} of {} =====".format(int((time.time() - subsequent_simulation_start_time)/60), round(((time.time() - subsequent_simulation_start_time)%60)/1, 2), self.iteration_number + 1, self.mesh_size))
                     subsequent_simulation_start_time = time.time()
 
+                # Increment iteration number 
                 self.iteration_number += 1
 
+            # Report completion and total time after iterating over entire parameter subspace
             print("\n===== ALL ITERATIONS FINISHED =====")
             print("===== {} m {} s for parameter mesh sweep =====".format(int((time.time() - self.overall_start_time)/60), round(((time.time() - self.overall_start_time)%60)/1, 2)))
 
+            # Print the quantification metric in an array where entries preserve relative location of points on contour plot and mesh figures (flipped and transposed)
             print('Output mesh: \n{}'.format(np.flipud(np.transpose(self.output_mesh))))
             
+            # If exactly two linear subspaces were specified then the simulation set is eligible for contour plot and mesh figure output
             if len(self.parameter_subspaces) == 2:
                 self.generateMeshFigures()
 
         else:
             self.overall_start_time = time.time() 
-            HPC_phi_simulation(self) 
+
+            if self.parameter_subspaces:
+                for dimension in range(len(self.parameter_subspace_names)):
+                    self.__dict__.update({self.parameter_subspace_names[dimension]: self.parameter_subspaces[dimension][0]})
+
+            phase_drift_quantification, cycle_phi_central_tendencies = HPC_phi_simulation(self) 
             print("===== {} m {} s to simulate iteration {} of {} =====".format((time.time() - self.overall_start_time)/60, ((time.time() - self.overall_start_time)%60)/1, 1, 1)) # These magic 1's make print statement indicate that simulation 1 of 1 is complete
+            print("Phase drift quantification: {}".format(phase_drift_quantification))
 
     def analyzeProtobufData(self):
 
+        self.output_list = []
+        self.cycle_phi_central_tendencies = []
+
         for protobuf_file in self.protobuf_files_to_decode:
 
-            self.protobuf_decode_path = Path('/'.join([self.protobuf_serialized_data_path, protobuf_file]))          
-class LIFNeuron:
+            self.protobuf_decode_path = Path('/'.join([self.protobuf_serialized_data_path, protobuf_file]))  
+
+            simulation_quantification, cycle_phi_central_tendencies = HPC_phi_simulation(self, execute_simulation=False) 
+            self.output_list.append(simulation_quantification)
+            self.cycle_phi_central_tendencies.append(cycle_phi_central_tendencies)    
+
+        print('Decoded and analyzed all requested files')  
+        print('Ordered simulation quantifications: {}'.format(self.output_list))     
+class LIFNeuron():
+    """Linear 'leak' function leaky integrate-and-fire neuron model with (optional) stochastic input. Defined according to Langevin equation [5.3] in https://neuronaldynamics.epfl.ch/online/Ch5.S1.html
+    
+    Model parameters are passed as an unpacked dictionary upon instantiation. The method .iterate is separate from ._updateVm for future-proofing; maybe we'll want to add more state variables later with 
+    separate ._update methods. To eliminate noise, set parameter sigma=0.
+    """
 
     def __init__(self, **kwargs):
 
-        model_parameter_names = ['rest_Vm', 'spike_Vm', 'rest_Vm', 'neuron_threshold', 'membrane_time_constant', 'absolute_refractory_period', 'membrane_resistance', 'dt', 'sigma']
+        # Specify strings corresponding to attributes in whatever class is being used to initialize the neuron model
+        model_parameter_names = ['rest_Vm', 'spike_Vm', 'rest_Vm', 'neuron_threshold', 'membrane_time_constant', 'absolute_refractory_period', 'membrane_resistance', 'dt', 'sigma', 'mu']
         self.__dict__.update({key: kwargs[key] for key in kwargs.keys() if key in model_parameter_names})
 
-        self.Vm = self.rest_Vm
+        self.Vm = self.rest_Vm # resting membrane potential starts at resting
 
-        self.stochastic_input = 0
+        self.stochastic_input = 0 # Stochastic input starts at 0
 
-        self.spikeState = False
+        self.spikeState = False # Neuron assumed to be subthreshold at initial condition
 
-        self.refractory_period_length = self.absolute_refractory_period//self.dt 
+        self.refractory_period_length = self.absolute_refractory_period//self.dt # Number of timesteps corresponding to absolute refractory period
         self.refractory_period_counter = 0 
 
     def updateVm(self, time_series_index, forcing, dt):
 
+        # If the neurn is labelled subthreshold with suprathreshold potential
         if self.Vm >= self.neuron_threshold and self.spikeState == False: 
             
-            self.Vm = self.spike_Vm 
-            self.spikeState = True 
+            self.Vm = self.spike_Vm # Make the neuron spike
+            self.spikeState = True # label the neuron as suprathreshold
 
+        # If the neuron is labelled as suprathreshold and the absolute refractory period is incomplete
         elif self.spikeState == True and self.refractory_period_counter < self.refractory_period_length: 
             
-            self.refractory_period_counter += 1 
+            self.refractory_period_counter += 1 # Increment the refractory period
        
+        # If the neuron is labelled as suprathreshold and the absolute refractory period is complete
         elif self.spikeState == True and self.refractory_period_counter >= self.refractory_period_length: 
             
-            self.Vm = self.rest_Vm 
-            self.spikeState = False 
-            self.refractory_period_counter = 0 
-        
+            self.Vm = self.rest_Vm # Return potential to resting
+            self.spikeState = False # Label the neuron as subthreshold
+            self.refractory_period_counter = 0 # Reset the refractory period for the next spike
+
+       # If the neuron is labelled as subthreshold with subthreshold potential 
         else:
 
-            self.VL = -(self.Vm - self.rest_Vm) 
-            self.V_forcing = forcing*self.membrane_resistance
-            self.stochastic_input = self.sigma*math.sqrt(self.dt)*np.random.normal(loc=0.0, scale=1.0) 
+            self.VL = -(self.Vm - self.rest_Vm) # Compute leak contribution
+            self.V_forcing = forcing*self.membrane_resistance # Compute forcing (input) contribution
+            self.stochastic_input = self.sigma*math.sqrt(self.dt)*np.random.normal(loc=self.mu, scale=1.0)  # Compute stochastic contribution (Ornstein-Uhlenbeck process)
 
-            voltageSuperposition = self.VL + self.V_forcing + self.stochastic_input
+            voltageSuperposition = self.VL + self.V_forcing # Combine all contributions to voltage increment
 
-            self.Vm += ((dt*voltageSuperposition)/self.membrane_time_constant) 
+            self.Vm += ((dt*voltageSuperposition)/self.membrane_time_constant + self.stochastic_input) # Scale by the timestep and membrane time constant, then integrate (in the mathematical sense)
 
     def iterate(self, time_series_index, forcing, dt):
 
+        # Update membrane potential
         self.updateVm(time_series_index, forcing, dt) 
-class Simulation:
+class Simulation():
+    """Class which progresses LIFNeuron simulation and stores output.
 
-    def __init__(self, LIFNeuron, SimulationIterationManager):
+    Specific to LIFNeuron class in HPC_phi application.
+    """
+    def __init__(self, LIFNeuron, **kwargs):
         
-        keys_of_interest = ['theta_amplitude', 'interference_amplitude', 'theta_frequency', 'interference_frequency', 'rest_Vm', 'spike_Vm', 'neuron_threshold', 'membrane_time_constant', 'absolute_refractory_period']
-        self.parameter_subset_to_print = {key: SimulationIterationManager.__dict__[key] for key in keys_of_interest}
-        self.model = LIFNeuron
+        if 'dummy_model' in kwargs.keys():
+
+            # Prevents operator from executing simulation without loading a model
+            self.disable_simulation = True
+
+        else:
+
+            # Specify keys to be included in the initialization message to the operator
+            keys_of_interest = ['theta_amplitude', 'interference_amplitude', 'theta_frequency', 'interference_frequency', 'rest_Vm', 'spike_Vm', 'neuron_threshold', 'membrane_time_constant', 'absolute_refractory_period']
+            self.parameter_subset_to_print = {key: kwargs[key] for key in keys_of_interest}
+
+            # Set model substrate of Simulation class instance
+            self.model = LIFNeuron
+            self.disable_simulation = False
 
     def initializeOutput(self, num_timesteps, dt):
 
-        self.timeAxis = np.arange(num_timesteps) * dt 
+        # Initialize vectors which will contain the simulation output
+        self.time_axis = np.arange(num_timesteps) * dt 
         self.Vm_t = np.empty(num_timesteps) 
         self.spike_times = np.zeros(num_timesteps)
 
-    def runSim(self, forcingFunction, num_timesteps, dt):
+    def runSim(self, forcing_function, theta_rhythm, num_timesteps, dt):
+        if not self.disable_simulation:
+            # Create vectors to contain output
+            self.initializeOutput(num_timesteps, dt) 
 
-        self.initializeOutput(num_timesteps, dt) 
+            # Keep input functions as attributes for downstream referral
+            self.dual_oscillator_rhythm = forcing_function
+            self.theta_rhythm = theta_rhythm
 
-        print("\nInitialization complete...") #
-        print("Simulating {} ms\nParameters: \n{}".format(forcingFunction.shape[0]*dt, self.parameter_subset_to_print))  
-        
-        for time_series_index in range(num_timesteps):
+            #Print initialization message
+            print("\nInitialization complete...") 
+            print("Simulating {} ms\nParameters: \n{}".format(forcing_function.shape[0]*dt, self.parameter_subset_to_print))  
+            
+            # At each timestep
+            for time_series_index in range(num_timesteps):
 
-            self.model.iterate(time_series_index, forcingFunction[time_series_index], dt) 
-            self.Vm_t[time_series_index] = self.model.Vm 
+                self.model.iterate(time_series_index, forcing_function[time_series_index], dt) # Integrate model over dt
+                self.Vm_t[time_series_index] = self.model.Vm # Keep track of Vm at time t
 
-            if self.model.spikeState == True and self.model.refractory_period_counter == 0:
-                self.spike_times[time_series_index] = 1 
-        
-        print("Simulation completed") 
+                # Keep track of when spikes occur (treat as pseudo-instantaneous)
+                if self.model.spikeState == True and self.model.refractory_period_counter == 0:
+                    self.spike_times[time_series_index] = 1 
+            
+            print("Simulation completed") 
 
-def extractSpikePhi(SimulationIterationManager, Simulation, theta_rhythm, execute_simulation=True):
+def extractSpikePhi(SimulationIterationManager, Simulation, execute_simulation=True):
+    """Takes spike times from a completed simulation and maps each to a phase value phi on theta_rhthm.
 
+    Assumes that theta_rhythm is a sinusoid, specifically a sin() wave function. Afterwards, uses a protocol buffer to serialize data, if requested. If no simulation was executed and the 
+    operator requested, decode one set of phi values via protocol buffer for analysis.
+    """
+
+    # If this function is being used in the simulate-and-analyze pipeline
     if execute_simulation == True:
 
-        theta_phase_time_series_INTERMEDIATE = list(map(lambda z: np.arctan2(z.imag, z.real - SimulationIterationManager.LFP_shift), hilbert(theta_rhythm))) # For each element in analytic signal, take arctan2 which outputs angle on interval (-pi, pi]  
+        # Extract phase time series of sinusoid
+        theta_phase_time_series_INTERMEDIATE = list(map(lambda z: np.arctan2(z.imag, z.real - SimulationIterationManager.LFP_shift), hilbert(Simulation.theta_rhythm))) # For each element in analytic signal, take arctan2 which outputs angle on interval (-pi, pi]  
         theta_phase_time_series = list(map(lambda phi: phi + 2*np.pi if phi < 0 else phi, theta_phase_time_series_INTERMEDIATE)) # For each angle on (-pi, pi], add 2*pi if phi < 0 to shift the interval to [0, 2*pi)
 
         del theta_phase_time_series_INTERMEDIATE 
 
-
         spike_phi = list(map(lambda i, j: j*theta_phase_time_series[i], range(len(Simulation.spike_times)), Simulation.spike_times))
 
+        # If operator requested a protobuf encode for the simulation
         if SimulationIterationManager.encode_simulation_output == True:
 
+            # Initialize the message as defined in the .proto file
             SimulationData_message = ProtoBufferInterface()
 
-            for key in Simulation.model.__dict__.keys():
+            # All parameters defined in global INPUT_SPECIFICATION_DICTIONARY are encoded as a map via the repeated InputParameter message field
+            for key in SimulationIterationManager.__dict__.keys():
 
-                if key in ['rest_Vm', 'spike_Vm', 'rest_Vm', 'neuron_threshold', 'membrane_time_constant', 'absolute_refractory_period', 'membrane_resistance', 'dt', 'sigma']:
+                if key in INPUT_SPECIFICATION_DICTIONARY.keys():
                     
-                    parameter = SimulationData_message.parameter.add()
-                    parameter.key = key
-                    parameter.value = Simulation.model.__dict__[key]
+                    parameter_message = SimulationData_message.parameters.add()
+                    parameter_message.key = key
+                    parameter_message.value = SimulationIterationManager.__dict__[key]
 
-            SimulationData_message.spike_phi[:] = spike_phi
+            # Encode theta and dual oscillator input time series via the optional InputRhythms message field
+            input_rhythms_message = SimulationData_message.input_rhythms
+            input_rhythms_message.theta_rhythm[:] = Simulation.theta_rhythm
+            input_rhythms_message.dual_oscillator_rhythm[:] = Simulation.dual_oscillator_rhythm
 
+            # Encode the simulation time axis and model membrane potential time series via the optional RawSimulationOutput message field
+            raw_simulation_output_message = SimulationData_message.raw_simulation_output
+            raw_simulation_output_message.time_axis[:] = Simulation.time_axis
+            raw_simulation_output_message.Vm_t[:] = Simulation.Vm_t
+
+            # Encode ordered phi values for each spike time and the theta rhythm phase over time via the optional RefinedSimulation Output message field
+            refined_simulation_output_message = SimulationData_message.refined_simulation_output
+            refined_simulation_output_message.spike_phi[:] = spike_phi
+            refined_simulation_output_message.theta_phase[:] = theta_phase_time_series
+
+            # Open the encode directory and serialize the data in binary
             with open(SimulationIterationManager.protobuf_encode_path, 'wb') as file_directory:
-
                 file_directory.write(SimulationData_message.SerializeToString())
 
-        #if SimulationIterationManager.decode_simulation_output == True:
+            del SimulationData_message
 
+    # If this function is being used in the decode-and-analyze pipeline
+    elif SimulationIterationManager.decode_simulation_output == True:
+        
+        SimulationData_message = ProtoBufferInterface()
 
+        with open(SimulationIterationManager.protobuf_decode_path, 'rb') as file_directory:
+            SimulationData_message.ParseFromString(file_directory.read())
 
-    return spike_phi, theta_phase_time_series
+        decoded_parameter_dictionary = {}
+        for parameter in SimulationData_message.parameters:
+            decoded_parameter_dictionary[parameter.key] = parameter.value
+
+        SimulationIterationManager.__dict__.update(decoded_parameter_dictionary)
+
+        Simulation.theta_rhythm = SimulationData_message.input_rhythms.theta_rhythm
+        Simulation.dual_oscillator_rhythm = SimulationData_message.input_rhythms.dual_oscillator_rhythm
+
+        Simulation.time_axis = SimulationData_message.raw_simulation_output.time_axis
+        Simulation.Vm_t = SimulationData_message.raw_simulation_output.Vm_t
+
+        spike_phi = SimulationData_message.refined_simulation_output.spike_phi
+        theta_phase_time_series = SimulationData_message.refined_simulation_output.theta_phase
+
+        print("Simulation data decoded from protocol buffer...")
+        print("Parameters:\n{}".format(decoded_parameter_dictionary))
+
+        del SimulationData_message
+
+    try:
+        return spike_phi, theta_phase_time_series
+    except:
+        raise Exception('No data for analysis; specify whether to generate or decode data')
 def computeCyclePhiCentralTendency(SimulationIterationManager, theta_phase_time_series, spike_phi):
-    
+    """For each cycle on the phase time series, use some operator-specified measure of central tendency to return a single value of phi.
+
+    Supports mean, median, mode and kernel density estimation. These choices are mostly identical from an algorithmic standpoint.
+    """
+
     spike_phi = np.array(spike_phi)
 
+    # Dictionary of currently supported measures of central tendency -- algorithmically these are all essentially identical
     central_tendency_measure_dictionary = {"0": 'mean',
                                            "1": 'median',
                                            "2": 'mode',
@@ -345,6 +519,7 @@ def computeCyclePhiCentralTendency(SimulationIterationManager, theta_phase_time_
 
     central_tendency_mode = central_tendency_measure_dictionary[str(SimulationIterationManager.central_tendency_mode)]
 
+    # If the operator would like to rotate the reference frame to adjust the cycle boundaries (which are themselves associated with interval [0, 2*np.pi))
     if SimulationIterationManager.theta_cycle_boundary_phase != 0: 
 
         rotated_theta_phase_time_series_INTERMEDIATE = list(map(lambda phi: phi - SimulationIterationManager.theta_cycle_boundary_phase, theta_phase_time_series)) # Rotate all phases by some angle (radians)
@@ -515,10 +690,15 @@ def computeCyclePhiCentralTendency(SimulationIterationManager, theta_phase_time_
 
     return np.array(cycle_phi_central_tendencies), cycle_boundary_indices
 def kernelDensityEstimation(data, SimulationIterationManager, cycle_interval=True):
+    """Uses kernel density estimation to approximate the observation probability density function on some interval, then returns argmax as measure of central tendency.
+
+    Kernel used is Gaussian, bandwidth optimized using leave-one-out cross validation algorithm. If there is only one data point, bandwidth is set to default as specified by operator in
+    SimulationIterationManager class attributes.
+    """
 
     data_2D = np.reshape(data, (-1, 1)) # The backend requires a 2D array of shape (N, 1), where N is the number of samples
 
-    if np.size(data_2D) > 1: # If we have greater than 1 spike time then we can do leave-one-out cross-validation
+    if np.size(data_2D) > 1: # If we have greater than 1 value then we can do leave-one-out cross-validation
 
         bandwidth_space = 10**np.linspace(-1, 1, 100) # Allows bandwidths to take on values between 10**-1 and 10**1
 
@@ -577,7 +757,11 @@ def kernelDensityEstimation(data, SimulationIterationManager, cycle_interval=Tru
         plt.show() 
 
     return KDE_interval[np.argmax(np.exp(ln_PDF_estimation))][0] 
-def plotSolution(SimulationIterationManager, Simulation, theta_rhythm, cycle_boundary_indices):
+def plotSolution(SimulationIterationManager, Simulation, cycle_boundary_indices):
+    """Simply plots the simulation solution (membrane potential) and theta_rhythm with cycle boundaries demarcated as computed from rotated frame of reference in computePhiCentralTendency().
+    
+    Optionally, saves the figure to the path specified as a SimulationIterationManager class attribte. File extension is .png, with dpi specified as path.
+    """
 
     plt.close()
 
@@ -588,11 +772,11 @@ def plotSolution(SimulationIterationManager, Simulation, theta_rhythm, cycle_bou
         ax.spines['top'].set_visible(False) # Make the top figure border invisible
         ax.spines['right'].set_visible(False)# Make the right figure border invisible
 
-    axes[0].plot(Simulation.timeAxis, Simulation.Vm_t, linewidth=0.8, color='deeppink', label='Vm') # Plot the membrane potential time series
-    axes[1].plot(Simulation.timeAxis, theta_rhythm, linewidth=0.8, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
+    axes[0].plot(Simulation.time_axis, Simulation.Vm_t, linewidth=0.8, color='deeppink', label='Vm') # Plot the membrane potential time series
+    axes[1].plot(Simulation.time_axis, Simulation.theta_rhythm, linewidth=0.8, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
 
     for boundary_index in cycle_boundary_indices:
-        axes[1].vlines(Simulation.timeAxis[boundary_index], min(theta_rhythm), max(theta_rhythm), linestyle='dashed', color='k', linewidth=0.8)
+        axes[1].vlines(Simulation.time_axis[boundary_index], min(Simulation.theta_rhythm), max(Simulation.theta_rhythm), linestyle='dashed', color='k', linewidth=0.8)
 
     axes[0].set_ylabel("$V_m$ $(mV)$") # y-axis label of membrane potential time series, in millivolts
     axes[1].set_ylabel("$Amplitude$ $(pA)$") # y-axis label of theta rhythm
@@ -603,128 +787,166 @@ def plotSolution(SimulationIterationManager, Simulation, theta_rhythm, cycle_bou
     if not SimulationIterationManager.sim_fig_suppress:
         plt.show()
 def constructReturnMap(SimulationIterationManager, cycle_phi_central_tendencies, ):
-
-    phi_K_previous = np.delete(cycle_phi_central_tendencies, -1) # All entries except the Kth one can be the (K - 1)th entry
-    phi_K = np.delete(cycle_phi_central_tendencies, 0) # All entries except the 0th can be the Kth (i.e. next) entry
-    line_of_identity = np.linspace(0, 2*np.pi) # Creates a line of identity with domain that spans the range of phi central tendencies
-    phi_map_coordinate_difference = np.subtract(phi_K_previous, phi_K)
-    
-    if not SimulationIterationManager.return_map_suppress or SimulationIterationManager.save_return_map:
-
-        plt.close()
-
-        fig, ax = plt.subplots() 
-        fig.patch.set_alpha(0.0) 
-
-        ax.spines['right'].set_visible(False)
-        ax.spines['top'].set_visible(False) 
-
-        ax.scatter(phi_K_previous, phi_K, s=6, color='deeppink') 
-        ax.plot(line_of_identity, line_of_identity, linestyle='dashed', color='k', linewidth=0.8) 
-
-        ax.set_xlabel("$\phi_{k-1}$", fontsize=13)
-        ax.set_ylabel("$\phi_{k}$", fontsize=13) 
-        ax.set_xlim([0, 2*np.pi])
-        ax.set_ylim([0, 2*np.pi])
-
-        tickLabelList = [r" ", r"$0$", r"$\frac{1}{3}\pi$", r"$\frac{2}{3}\pi$", r"$\pi$", r"$\frac{4}{3}\pi$", r"$\frac{5}{3}\pi$", r"$2\pi$"] 
-        ax.set_xticklabels(tickLabelList) 
-        ax.set_yticklabels(tickLabelList)
+    """Computes vector of phi_{k-1} - phi_{k} for one simulation, then optionally plots these points with line of identity for reference
+    """
+    try:
+        phi_K_previous = np.delete(cycle_phi_central_tendencies, -1) # All entries except the Kth one can be the (K - 1)th entry
+        phi_K = np.delete(cycle_phi_central_tendencies, 0) # All entries except the 0th can be the Kth (i.e. next) entry
+        line_of_identity = np.linspace(0, 2*np.pi) # Creates a line of identity with domain that spans the range of phi central tendencies
+        phi_map_coordinate_difference = np.subtract(phi_K_previous, phi_K)
         
-        if SimulationIterationManager.save_return_map:
-            plt.savefig(Path('/'.join([SimulationIterationManager.saved_figure_path, 'returnMaps', 'HPC_phi_iteration{}.png'.format(SimulationIterationManager.iteration_number)])), dpi=SimulationIterationManager.dpi, bbox_inches='tight') 
-        if not SimulationIterationManager.return_map_suppress:
-            plt.show()
+        if not SimulationIterationManager.return_map_suppress or SimulationIterationManager.save_return_map:
 
-    return phi_map_coordinate_difference
+            plt.close()
+
+            fig, ax = plt.subplots() 
+            fig.patch.set_alpha(0.0) 
+
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False) 
+
+            ax.scatter(phi_K_previous, phi_K, s=6, color='deeppink') 
+            ax.plot(line_of_identity, line_of_identity, linestyle='dashed', color='k', linewidth=0.8) 
+
+            ax.set_xlabel("$\phi_{k-1}$", fontsize=13)
+            ax.set_ylabel("$\phi_{k}$", fontsize=13) 
+            ax.set_xlim([0, 2*np.pi])
+            ax.set_ylim([0, 2*np.pi])
+
+            tickLabelList = [r" ", r"$0$", r"$\frac{1}{3}\pi$", r"$\frac{2}{3}\pi$", r"$\pi$", r"$\frac{4}{3}\pi$", r"$\frac{5}{3}\pi$", r"$2\pi$"] 
+            ax.set_xticklabels(tickLabelList) 
+            ax.set_yticklabels(tickLabelList)
+            
+            if SimulationIterationManager.save_return_map:
+                plt.savefig(Path('/'.join([SimulationIterationManager.saved_figure_path, 'returnMaps', 'HPC_phi_iteration{}.png'.format(SimulationIterationManager.iteration_number)])), dpi=SimulationIterationManager.dpi, bbox_inches='tight') 
+            if not SimulationIterationManager.return_map_suppress:
+                plt.show()
+
+        return phi_map_coordinate_difference
+    except IndexError:
+        print("Inputs did not elicit spiking over simulation duration...")
+        print("Phase drift quantification not defined")
+        return "NO_SPIKES"
 
 def HPC_phi_simulation(SimulationIterationManager, execute_simulation=True):
-
+    """Outer pipeline controls execution of simulation, then calls for analysis and data encoding/decoding
+    """
+    # If called as part of the simulate-and-analyze pipeline: Simulate!
     if execute_simulation == True:
 
         num_timesteps = int(SimulationIterationManager.simulation_duration/SimulationIterationManager.dt) 
- 
-        # Convert desired frequency into radians/ms
-        omega_theta = 2*np.pi*((SimulationIterationManager.theta_frequency**-1)*1000)**(-1) # Natural (angular) frequency corresponding to hippocampal theta LFP oscillations (radians/ms); NUMBER IS PERIOD IN ms
-        omega_interference = 2*np.pi*((SimulationIterationManager.interference_frequency**-1)*1000)**(-1) # Natural (angular) frequency of interloping oscillator (radians/ms); NUMBER IS PERIOD IN ms
 
-        # Functions defining independent field oscillations using forcing parameters
-        theta_function = lambda t: SimulationIterationManager.theta_amplitude*np.sin(omega_theta*t) + SimulationIterationManager.LFP_shift # Corresponds to hippocampal theta sinusoidal oscillations
-        interference_function = lambda t: SimulationIterationManager.interference_amplitude*np.sin(omega_interference*t) + SimulationIterationManager.LFP_shift # Corresponds to some interferring oscillation
+        # Dual oscillator input 
+        if SimulationIterationManager.constant_input == False:
+            # Convert desired frequency into radians/ms
+            omega_theta = 2*np.pi*((SimulationIterationManager.theta_frequency**-1)*1000)**(-1) # Natural (angular) frequency corresponding to hippocampal theta LFP oscillations (radians/ms); NUMBER IS PERIOD IN ms
+            omega_interference = 2*np.pi*((SimulationIterationManager.interference_frequency**-1)*1000)**(-1) # Natural (angular) frequency of interloping oscillator (radians/ms); NUMBER IS PERIOD IN ms
 
-        # Generate the theta and interference oscillations over specified timeseries, then superimpose the two
-        theta_rhythm = list(map(theta_function, list(map(lambda t: t*SimulationIterationManager.dt, range(num_timesteps))))) 
-        interference_rhythm = list(map(interference_function, list(map(lambda t: t*SimulationIterationManager.dt, range(num_timesteps))))) 
-        field_oscillation = np.array([x + y for x, y in zip(theta_rhythm, interference_rhythm)]) 
+            # Functions defining independent field oscillations using forcing parameters
+            theta_function = lambda t: SimulationIterationManager.theta_amplitude*np.sin(omega_theta*t) + SimulationIterationManager.LFP_shift # Corresponds to hippocampal theta sinusoidal oscillations
+            interference_function = lambda t: SimulationIterationManager.interference_amplitude*np.sin(omega_interference*t) + SimulationIterationManager.LFP_shift # Corresponds to some interferring oscillation
+
+            # Generate the theta and interference oscillations over specified timeseries, then superimpose the two
+            theta_rhythm = list(map(theta_function, list(map(lambda t: t*SimulationIterationManager.dt, range(num_timesteps))))) 
+            interference_rhythm = list(map(interference_function, list(map(lambda t: t*SimulationIterationManager.dt, range(num_timesteps))))) 
+            field_oscillation = np.array([x + y for x, y in zip(theta_rhythm, interference_rhythm)]) 
+
+        # If we intend to inject a constant current rather than an oscillatory one
+        if SimulationIterationManager.constant_input == True:
+            field_oscillation = np.array([SimulationIterationManager.theta_amplitude]*num_timesteps)
+            theta_rhythm = field_oscillation
 
         # Instantiate LIFNeuron
         Neuron = LIFNeuron(**SimulationIterationManager.__dict__)
 
         # Create and run simulation
-        NeuronSim = Simulation(Neuron, SimulationIterationManager)
-        NeuronSim.runSim(field_oscillation, num_timesteps, SimulationIterationManager.dt)
+        NeuronSim = Simulation(Neuron, **SimulationIterationManager.__dict__)
+        NeuronSim.runSim(field_oscillation, theta_rhythm, num_timesteps, SimulationIterationManager.dt)
     
-    simulation_quantification, cycle_phi_central_tendencies = simulationAnalysis(SimulationIterationManager, NeuronSim, theta_rhythm, execute_simulation=execute_simulation)
+    # If called as part of the decode-and-analyze pipeline: Set simulation objects as NoneType and proceed
+    else:
+        dummy_model = None
+        NeuronSim = Simulation(dummy_model, **{"dummy_model": None})
+   
+    # Run encode/decode and analysis as requested by operator
+    simulation_quantification, cycle_phi_central_tendencies = simulationAnalysis(SimulationIterationManager, NeuronSim, execute_simulation=execute_simulation)
 
     return simulation_quantification, cycle_phi_central_tendencies
-def simulationAnalysis(SimulationIterationManager, Simulation, theta_rhythm, execute_simulation=True):
-
+def simulationAnalysis(SimulationIterationManager, Simulation, execute_simulation=True):
+    """Analysis pipeline extracts phi values, reduces them to a single value per cycle, plots simulation solution/return map and then reduces entire simulation to a single value
+    """
     # Compute simulation phi sequence
-    spike_phi, theta_phase_time_series = extractSpikePhi(SimulationIterationManager, Simulation, theta_rhythm, execute_simulation=execute_simulation)
+    spike_phi, theta_phase_time_series = extractSpikePhi(SimulationIterationManager, Simulation, execute_simulation=execute_simulation)
 
     # Compute phi central tendencies on each theta cycle and construct return map
     cycle_phi_central_tendencies, cycle_boundary_indices = computeCyclePhiCentralTendency(SimulationIterationManager, theta_phase_time_series, spike_phi)
 
     # Plot simulation output and Return map
     if not SimulationIterationManager.sim_fig_suppress or SimulationIterationManager.save_sim_fig:
-        plotSolution(SimulationIterationManager, Simulation, theta_rhythm, cycle_boundary_indices)
+        plotSolution(SimulationIterationManager, Simulation, cycle_boundary_indices)
 
+    # Get reverse discrete differences of cycle phi with optional return map plot
     return_map_coordinate_differences = constructReturnMap(SimulationIterationManager, cycle_phi_central_tendencies)
-    simulation_quantification = kernelDensityEstimation(return_map_coordinate_differences, SimulationIterationManager, cycle_interval=False)
 
-    return simulation_quantification, cycle_phi_central_tendencies
+    # If False then no spikes occurred
+    if type(return_map_coordinate_differences) != str:
+
+        # Use KDE to reduce reverse differences to a single value: argmax(KDE)
+        simulation_quantification = kernelDensityEstimation(return_map_coordinate_differences, SimulationIterationManager, cycle_interval=False)
+
+        return simulation_quantification, cycle_phi_central_tendencies
+
+    # Try returning NoneType objects; most likely will only cause problems during contour and mesh figs   
+    else:
+        return None, []
 
 def main():
 
+    # Assert that directory is to HPC_phi package for paths to be accurate
     directory_deepest_level = os.getcwd().split('\\')[-1]
     assert directory_deepest_level.split('.') == ['HPC_phi'], 'Working directory should be to HPC_phi folder;\nCurrent working directory: {}'.format(os.getcwd())
-
+   
+    global INPUT_SPECIFICATION_DICTIONARY
     INPUT_SPECIFICATION_DICTIONARY = {# Time parameters
                                       'dt': 0.01,                                   
-                                      'simulation_duration': 1000,  
+                                      'simulation_duration': 20000,  
         
                                       # Dual oscillator input parameters
-                                      'theta_amplitude': 300,                       
-                                      'interference_amplitude': 300,                
-                                      'theta_frequency': 12,                         
-                                      'interference_frequency': 13.5,                
-                                      'LFP_shift': 0,                                
+                                      'theta_amplitude': 100,                       
+                                      'interference_amplitude': 100,                
+                                      'theta_frequency': 8,                         
+                                      'interference_frequency': 9,                
+                                      'LFP_shift': 0,
+                                      'constant_input': False,                                
                  
                                       # Langevin model properties
                                       'rest_Vm': -75,                                
-                                      'spike_Vm': 160,                               
-                                      'neuron_threshold': -40,                      
-                                      'membrane_time_constant': 40,                 
+                                      'spike_Vm': 50,                               
+                                      'neuron_threshold': -35,                      
+                                      'membrane_time_constant': 10,                 
                                       'membrane_resistance': 1,                     
-                                      'absolute_refractory_period': 0,              
-                                      'sigma': 0.0,
+                                      'absolute_refractory_period': 2,              
+                                      'sigma': 1.0,
+                                      'mu': 0.3}
 
-                                      # Analysis parameters
-                                      'verbose': False,
-                                      'central_tendency_mode': 3,                  
-                                      'theta_cycle_boundary_phase': 3*np.pi/2,      
-                                      'kernel_bandwidth': 1.5}      
-         
-    OUTPUT_SPECIFICATION_DICTIONARY = {# Figure popup suppression options 
-                                       'sim_fig_suppress': True,                                          
-                                       'return_map_suppress': True,                                           
+    global OUTPUT_SPECIFICATION_DICTIONARY
+    OUTPUT_SPECIFICATION_DICTIONARY = {# Analysis parameters
+                                       'verbose': False,
+                                       'central_tendency_mode': 3,                  
+                                       'theta_cycle_boundary_phase': 3*np.pi/2,      
+                                       'kernel_bandwidth': 1.5, 
+
+                                       # Figure popup suppression options 
+                                       'sim_fig_suppress': False,                                          
+                                       'return_map_suppress': False,                                           
                                        'central_tendency_PDF_estimation_suppress': True,                                       
                                        'return_map_PDF_estimation_suppress': True,                                           
-                                       'contour_plot_suppress': False,                                       
-                                       'mesh_fig_suppress': False,                                         
+                                       'contour_plot_suppress': True,                                       
+                                       'mesh_fig_suppress': True,                                         
                                        
                                        # Figure saving options
                                        'saved_figure_path': '/'.join([os.getcwd(), 'modelFigures']),
+                                       'dpi': 300,
                                        'save_sim_fig': False,                       
                                        'save_return_map': False,                     
                                        'save_contour_plot': False,                    
@@ -732,23 +954,30 @@ def main():
                                        
                                        # Figure filetype options
                                        'contour_plot_file_type': '.svg',              
-                                       'mesh_fig_file_type': '.png',
+                                       'mesh_fig_file_type': '.svg',
                                        
                                        # Protocol buffer options
                                        'protobuf_serialized_data_path': '/'.join([os.getcwd(), 'serializedSims']),
-                                       'encode_simulation_output': True,
-                                       'decode_simulation_output': False,
-                                       'protobuf_files_to_decode': ['theta_frequency_interference_frequency_1_3_10_1_3_10_070621_1.pb.bin']} 
+                                       'encode_simulation_output': False,
+                                       'decode_simulation_output': True,
+                                       'protobuf_files_to_decode': ['_theta_amplitude_interference_amplitude_10_10_1_10_10_1_09062021_0.pb.bin']} 
 
+    # Instantiate program specification objects
     InputSpecificationsObject = InputSpecifications(**INPUT_SPECIFICATION_DICTIONARY)
-    InputSpecificationsObject.newParameterSubspace('theta_amplitude', lambda q: q*300, 1, 3, 2)
-    InputSpecificationsObject.newParameterSubspace('interference_amplitude', lambda q: q*300, 1, 3, 2)
-    InputSpecificationsObject.sealParameterSubspace()
-
     OutputSpecificationsObject = OutputSpecifications(**OUTPUT_SPECIFICATION_DICTIONARY)
 
+    # Add to and seal the parameter subspace to iterate over
+    InputSpecificationsObject.newParameterSubspace('theta_amplitude', '(mV)', lambda q: q*10, 1, 1, 1)
+    InputSpecificationsObject.newParameterSubspace('interference_amplitude', '(mV)', lambda q: q*10, 1, 1, 1)
+    InputSpecificationsObject.sealParameterSubspace()
+
+    # Pass specifications into the iteration manager, then run analysis through the selected 
     SimulationSet = SimulationIterationManager(InputSpecificationsObject, OutputSpecificationsObject)
-    SimulationSet.meshSweep()
+
+    if SimulationSet.decode_simulation_output == False:
+        SimulationSet.meshSweep()
+    else:
+        SimulationSet.analyzeProtobufData()
 
 if __name__ == '__main__':
     main()
