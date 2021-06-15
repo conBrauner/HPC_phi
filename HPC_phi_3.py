@@ -10,6 +10,7 @@ import time
 
 # Third party imports
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from scipy.signal import hilbert
 from scipy.stats import mode
 from sklearn.neighbors import KernelDensity
@@ -88,6 +89,11 @@ class SimulationIterationManager():
             self.output_mesh = np.zeros(mesh_shape) # To contain return map metric at each coordinate
             self.coordinate_mesh = np.zeros(mesh_shape, dtype=(int, len(self.parameter_subspaces))) # To contain the coordinate at each coordinate
             self.cycle_phi_central_tendencies = np.zeros(mesh_shape, dtype=(list)) # To contain the central tendency of phi on each theta cycle for the simulation at each coordinate
+
+            if self.mesh_fig_time_series_suppress == False or self.save_mesh_fig_time_series == True:
+                self.neuron_time_series_mesh = np.zeros(mesh_shape, dtype=(list))
+                self.LFP_time_series_mesh = np.zeros(mesh_shape, dtype=(list))
+                self.cycle_boundary_indices_mesh = np.zeros(mesh_shape, dtype=(list))
         
         else:
             self.output_list = []
@@ -174,6 +180,64 @@ class SimulationIterationManager():
             if self.save_mesh_fig == True:
                 figureObject.savefig(Path('/'.join([self.saved_figure_path, 'meshFigs', 'HPC_phi_meshFig_{}{}{}'.format(date.today().day, date.today().month, self.mesh_fig_file_type)])), dpi=self.dpi, bbox_inches='tight')
     
+        if self.mesh_fig_time_series_suppress == False or self.save_mesh_fig_time_series == True:
+
+            self.neuron_time_series_mesh = np.flipud(np.transpose(self.neuron_time_series_mesh)) # Transpose the grid, then reflect in horizontal axis
+            self.LFP_time_series_mesh = np.flipud(np.transpose(self.LFP_time_series_mesh)) # Transpose the grid, then reflect in horizontal axis
+            time_axis = np.arange(int(self.simulation_duration/self.dt))*self.dt
+
+            plt.close()
+
+            fig, axes = plt.subplots(nrows=len(self.parameter_subspaces[1]), ncols=len(self.parameter_subspaces[0]))
+            gridspec = axes[0, 0].get_subplotspec().get_gridspec()
+            fig.patch.set_alpha(0.0)
+
+            # For small axis sizes, set fontsize = 10, otherwise set fontsize = 20/ln(size(largest_subspace))
+            if axes.shape[0] < 7 and axes.shape[1] < 7:
+                fontSize = 10
+            elif axes.shape[0] < axes.shape[1]:
+                fontSize = 20*(math.log(axes.shape[1]))**-1
+            else:
+                fontSize = 20*(math.log(axes.shape[0]))**-1
+
+            # Make the right and top figure border for each subfigure invisible
+            for row in axes:
+                for col in row:
+                    col.spines['top'].set_visible(False)
+                    col.spines['right'].set_visible(False) 
+
+            for row_number, row in enumerate(self.neuron_time_series_mesh, start=0):
+                for column_number, data in enumerate(row, start=0):
+
+                    subfig = fig.add_subfigure(gridspec[row_number, column_number])
+                    subfig.patch.set_alpha(0.0) # Make figure background transparent
+
+                    subaxes = subfig.subplots(nrows=2, sharex=True, sharey=False)
+
+                    for ax in subaxes:
+                        ax.spines['top'].set_visible(False) # Make the top figure border invisible
+                        ax.spines['right'].set_visible(False)# Make the right figure border invisible
+
+                    subaxes[0].plot(time_axis, data, linewidth=0.25, color='deeppink', label='Vm') # Plot the membrane potential time series
+                    subaxes[1].plot(time_axis, self.LFP_time_series_mesh[row_number, column_number], linewidth=0.25, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
+
+                    for boundary_index in cycle_boundary_indices:
+                        axes[1].vlines(Simulation.time_axis[boundary_index], min(Simulation.theta_rhythm), max(Simulation.theta_rhythm), linestyle='dashed', color='k', linewidth=0.8)
+
+                    axes[0].set_ylabel("$V_m$ $(mV)$") # y-axis label of membrane potential time series, in millivolts
+                    axes[1].set_ylabel("$Amplitude$ $(pA)$") # y-axis label of theta rhythm
+                    axes[1].set_xlabel("$Time$ $(ms))$") # Label the x-axis only on the bottommost plot in milliseconds
+
+                    if row_number == len(self.cycle_phi_central_tendencies) - 1:
+                        axes[row_number, column_number].set_xlabel(int(self.parameter_subspaces[0][column_number]), fontsize=fontSize)
+                    if column_number == 0:
+                        axes[row_number, column_number].set_ylabel(int(self.parameter_subspaces[1][- row_number - 1]), fontsize=fontSize)
+            
+            fig.text(0.5, 0.02, self.parameter_subspace_names[0].replace("_", " ") + " " + self.parameter_subspace_units[0], ha='center')
+            fig.text(0.04, 0.5, self.parameter_subspace_names[1].replace("_", " ") + " " + self.parameter_subspace_units[1], va='center', rotation='vertical')
+
+            figureObject = plt.gcf()
+
     def updateEncodePath(self, update_filename=False): 
         """Generates string filename for serialized data according to format: 
         
@@ -247,7 +311,8 @@ class SimulationIterationManager():
                 for dimension, subspace_index in enumerate(parameter_space_coordinate, start=0): # Coordinate index corresponds to single parameter subspace
 
                     self.__dict__.update({self.parameter_subspace_names[dimension]: self.parameter_subspaces[dimension][subspace_index]}) # Update parameter 
-                
+                    self.parameter_space_coordinate = parameter_space_coordinate
+
                 # Update protocol buffer filename and encode path on second and subsequent iterations
                 if self.iteration_number != 0:
                     self.updateEncodePath(update_filename=True)
@@ -296,15 +361,34 @@ class SimulationIterationManager():
         self.output_list = []
         self.cycle_phi_central_tendencies = []
 
+        self.overall_start_time = time.time()
+        self.num_files_to_decode = len(self.protobuf_files_to_decode)
+
         for protobuf_file in self.protobuf_files_to_decode:
 
             self.protobuf_decode_path = Path('/'.join([self.protobuf_serialized_data_path, protobuf_file]))  
 
             simulation_quantification, cycle_phi_central_tendencies = HPC_phi_simulation(self, execute_simulation=False) 
             self.output_list.append(simulation_quantification)
-            self.cycle_phi_central_tendencies.append(cycle_phi_central_tendencies)    
+            self.cycle_phi_central_tendencies.append(cycle_phi_central_tendencies)  
 
-        print('Decoded and analyzed all requested files')  
+            # On the first iteration use the overall_start_time to report progress
+            if self.iteration_number == 0:
+                print("===== {} m {} s to decode iteration {} of {} =====".format(int((time.time() - self.overall_start_time)/60), round(((time.time() - self.overall_start_time)%60)/1, 2), self.iteration_number + 1, self.num_files_to_decode))
+                subsequent_simulation_start_time = time.time() # Initialize a new timer for the second simulation
+            
+            # On subsequent iterations use and then reset the second timer to report progress
+            else:
+                print("===== {} m {} s to decode iteration {} of {} =====".format(int((time.time() - subsequent_simulation_start_time)/60), round(((time.time() - subsequent_simulation_start_time)%60)/1, 2), self.iteration_number + 1, self.num_files_to_decode))
+                subsequent_simulation_start_time = time.time()
+
+            # Increment iteration number 
+            self.iteration_number += 1  
+    
+        # Report completion and total time after decoding all requested files
+        print("\n===== ALL ITERATIONS FINISHED =====")
+        print("===== {} m {} s to decode and analyze all files =====".format(int((time.time() - self.overall_start_time)/60), round(((time.time() - self.overall_start_time)%60)/1, 2)))
+ 
         print('Ordered simulation quantifications: {}'.format(self.output_list))     
 class LIFNeuron():
     """Linear 'leak' function leaky integrate-and-fire neuron model with (optional) stochastic input. Defined according to Langevin equation [5.3] in https://neuronaldynamics.epfl.ch/online/Ch5.S1.html
@@ -316,36 +400,39 @@ class LIFNeuron():
     def __init__(self, **kwargs):
 
         # Specify strings corresponding to attributes in whatever class is being used to initialize the neuron model
-        model_parameter_names = ['rest_Vm', 'spike_Vm', 'rest_Vm', 'neuron_threshold', 'membrane_time_constant', 'absolute_refractory_period', 'membrane_resistance', 'dt', 'sigma', 'mu']
+        model_parameter_names = ['rest_Vm', 'spike_Vm', 'rest_Vm', 'neuron_threshold', 'membrane_time_constant', 'absolute_refractory_period', 'membrane_resistance', 'dt', 'sigma', 'mu', 'adaptation_decay_constant', 'adaptation_time_constant', 'adaptation_response_constant']
         self.__dict__.update({key: kwargs[key] for key in kwargs.keys() if key in model_parameter_names})
 
         self.Vm = self.rest_Vm # resting membrane potential starts at resting
 
         self.stochastic_input = 0 # Stochastic input starts at 0
 
-        self.spikeState = False # Neuron assumed to be subthreshold at initial condition
+        self.spike_state = False # Neuron assumed to be subthreshold at initial condition
 
         self.refractory_period_length = self.absolute_refractory_period//self.dt # Number of timesteps corresponding to absolute refractory period
         self.refractory_period_counter = 0 
 
+        self.adaptation_decay_constant = self.adaptation_decay_constant/self.adaptation_time_constant
+        self.W_current = 0
+
     def updateVm(self, time_series_index, forcing, dt):
 
         # If the neurn is labelled subthreshold with suprathreshold potential
-        if self.Vm >= self.neuron_threshold and self.spikeState == False: 
+        if self.Vm >= self.neuron_threshold and self.spike_state == False: 
             
             self.Vm = self.spike_Vm # Make the neuron spike
-            self.spikeState = True # label the neuron as suprathreshold
+            self.spike_state = True # label the neuron as suprathreshold
 
         # If the neuron is labelled as suprathreshold and the absolute refractory period is incomplete
-        elif self.spikeState == True and self.refractory_period_counter < self.refractory_period_length: 
+        elif self.spike_state == True and self.refractory_period_counter < self.refractory_period_length: 
             
             self.refractory_period_counter += 1 # Increment the refractory period
        
         # If the neuron is labelled as suprathreshold and the absolute refractory period is complete
-        elif self.spikeState == True and self.refractory_period_counter >= self.refractory_period_length: 
+        elif self.spike_state == True and self.refractory_period_counter >= self.refractory_period_length: 
             
             self.Vm = self.rest_Vm # Return potential to resting
-            self.spikeState = False # Label the neuron as subthreshold
+            self.spike_state = False # Label the neuron as subthreshold
             self.refractory_period_counter = 0 # Reset the refractory period for the next spike
 
        # If the neuron is labelled as subthreshold with subthreshold potential 
@@ -355,11 +442,23 @@ class LIFNeuron():
             self.V_forcing = forcing*self.membrane_resistance # Compute forcing (input) contribution
             self.stochastic_input = self.sigma*math.sqrt(self.dt)*np.random.normal(loc=self.mu, scale=1.0)  # Compute stochastic contribution (Ornstein-Uhlenbeck process)
 
-            voltageSuperposition = self.VL + self.V_forcing # Combine all contributions to voltage increment
+            voltageSuperposition = self.VL + self.V_forcing - self.W_current*self.membrane_resistance # Combine all contributions to voltage increment, including adaptation for spike frequency attenuation
 
             self.Vm += ((dt*voltageSuperposition)/self.membrane_time_constant + self.stochastic_input) # Scale by the timestep and membrane time constant, then integrate (in the mathematical sense)
 
+    def updateAdaptation(self, dt):
+
+        if self.spike_state == True:
+            self.adaptation_increase = self.adaptation_response_constant
+        else:
+            self.adaptation_increase = 0
+
+        self.W_current += dt*(-self.adaptation_decay_constant + self.adaptation_increase)
+
     def iterate(self, time_series_index, forcing, dt):
+
+        # Update adaptation variables
+        self.updateAdaptation(dt)
 
         # Update membrane potential
         self.updateVm(time_series_index, forcing, dt) 
@@ -412,7 +511,7 @@ class Simulation():
                 self.Vm_t[time_series_index] = self.model.Vm # Keep track of Vm at time t
 
                 # Keep track of when spikes occur (treat as pseudo-instantaneous)
-                if self.model.spikeState == True and self.model.refractory_period_counter == 0:
+                if self.model.spike_state == True and self.model.refractory_period_counter == 0:
                     self.spike_times[time_series_index] = 1 
             
             print("Simulation completed") 
@@ -474,26 +573,34 @@ def extractSpikePhi(SimulationIterationManager, Simulation, execute_simulation=T
     # If this function is being used in the decode-and-analyze pipeline
     elif SimulationIterationManager.decode_simulation_output == True:
         
+        # Initialize the message as defined in the .proto file
         SimulationData_message = ProtoBufferInterface()
 
+        # Open the encode directory and serialize the data in binary
         with open(SimulationIterationManager.protobuf_decode_path, 'rb') as file_directory:
             SimulationData_message.ParseFromString(file_directory.read())
 
+        # Generate a dictionary containing all of the parameters from the decoded simulation INPUT_PARAMETER_DICTIONARY
         decoded_parameter_dictionary = {}
         for parameter in SimulationData_message.parameters:
             decoded_parameter_dictionary[parameter.key] = parameter.value
 
+        # Update SimulationIterationManager attributes with those from the loaded simulation to be retrieved during analysis
         SimulationIterationManager.__dict__.update(decoded_parameter_dictionary)
 
+        # Update the Simulation object attributes with the model input rhythms to be retrieved during analysis
         Simulation.theta_rhythm = SimulationData_message.input_rhythms.theta_rhythm
         Simulation.dual_oscillator_rhythm = SimulationData_message.input_rhythms.dual_oscillator_rhythm
 
+        # Update the Simulation object attributes to contain the solution and time axis to the decoded simulation (in a way behaving as though it just ran a simulation)
         Simulation.time_axis = SimulationData_message.raw_simulation_output.time_axis
         Simulation.Vm_t = SimulationData_message.raw_simulation_output.Vm_t
 
+        # Decode the typical return variables from this function
         spike_phi = SimulationData_message.refined_simulation_output.spike_phi
         theta_phase_time_series = SimulationData_message.refined_simulation_output.theta_phase
 
+        # Notify the operator of the successful decode
         print("Simulation data decoded from protocol buffer...")
         print("Parameters:\n{}".format(decoded_parameter_dictionary))
 
@@ -786,6 +893,15 @@ def plotSolution(SimulationIterationManager, Simulation, cycle_boundary_indices)
         plt.savefig(Path('/'.join([SimulationIterationManager.saved_figure_path, 'timeSeries', 'HPC_phi_iteration{}.png'.format(SimulationIterationManager.iteration_number)])), dpi=SimulationIterationManager.dpi, bbox_inches='tight') 
     if not SimulationIterationManager.sim_fig_suppress:
         plt.show()
+        
+    if SimulationIterationManager.mesh_fig_time_series_suppress == False or SimulationIterationManager.save_mesh_fig_time_series == True:
+        num_timesteps_to_plot = int(3000/SimulationIterationManager.dt)
+        if len(Simulation.time_axis) >= num_timesteps_to_plot:
+            SimulationIterationManager.neuron_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.Vm_t[-num_timesteps_to_plot:].tolist()
+            SimulationIterationManager.LFP_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.theta_rhythm[-num_timesteps_to_plot:].tolist()
+        else:
+            SimulationIterationManager.neuron_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.Vm_t[:].tolist()
+            SimulationIterationManager.LFP_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.theta_rhythm[:].tolist()
 def constructReturnMap(SimulationIterationManager, cycle_phi_central_tendencies, ):
     """Computes vector of phi_{k-1} - phi_{k} for one simulation, then optionally plots these points with line of identity for reference
     """
@@ -901,15 +1017,11 @@ def simulationAnalysis(SimulationIterationManager, Simulation, execute_simulatio
         return None, []
 
 def main():
-
-    # Assert that directory is to HPC_phi package for paths to be accurate
-    directory_deepest_level = os.getcwd().split('\\')[-1]
-    assert directory_deepest_level.split('.') == ['HPC_phi'], 'Working directory should be to HPC_phi folder;\nCurrent working directory: {}'.format(os.getcwd())
    
     global INPUT_SPECIFICATION_DICTIONARY
     INPUT_SPECIFICATION_DICTIONARY = {# Time parameters
                                       'dt': 0.01,                                   
-                                      'simulation_duration': 20000,  
+                                      'simulation_duration': 5000,  
         
                                       # Dual oscillator input parameters
                                       'theta_amplitude': 100,                       
@@ -927,7 +1039,10 @@ def main():
                                       'membrane_resistance': 1,                     
                                       'absolute_refractory_period': 2,              
                                       'sigma': 1.0,
-                                      'mu': 0.3}
+                                      'mu': 0.3,
+                                      'adaptation_decay_constant': 1,
+                                      'adaptation_time_constant': 10,
+                                      'adaptation_response_constant': 3}
 
     global OUTPUT_SPECIFICATION_DICTIONARY
     OUTPUT_SPECIFICATION_DICTIONARY = {# Analysis parameters
@@ -959,7 +1074,7 @@ def main():
                                        # Protocol buffer options
                                        'protobuf_serialized_data_path': '/'.join([os.getcwd(), 'serializedSims']),
                                        'encode_simulation_output': False,
-                                       'decode_simulation_output': True,
+                                       'decode_simulation_output': False,
                                        'protobuf_files_to_decode': ['_theta_amplitude_interference_amplitude_10_10_1_10_10_1_09062021_0.pb.bin']} 
 
     # Instantiate program specification objects
