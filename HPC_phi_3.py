@@ -96,8 +96,29 @@ class SimulationIterationManager():
                 self.cycle_boundary_indices_mesh = np.zeros(mesh_shape, dtype=(list))
         
         else:
-            self.output_list = []
-            self.cycle_phi_central_tendencies = []
+
+            self.sorted_protobuf_files_to_decode = [0]*len(self.protobuf_files_to_decode)
+
+            for filename in self.protobuf_files_to_decode:
+
+                underscore_separated_segments = filename.split('_')
+                mesh_shape_backwards = []
+                decode_iteration = int(underscore_separated_segments[-1].split('.')[0])
+                self.sorted_protobuf_files_to_decode[decode_iteration] = filename
+
+                for dimension in range(self.protobuf_mesh_dimension):
+                    mesh_shape_backwards.append(int(underscore_separated_segments[-3*(dimension + 1)]))
+
+            self.dimension_lengths = tuple(mesh_shape_backwards.reverse())
+            self.sorted_protobuf_files_to_decode = np.reshape(self.sorted_protobuf_files_to_decode, self.dimension_lengths)
+
+            self.output_mesh = np.zeros(self.dimension_lengths) # To contain return map metric at each coordinate
+            self.cycle_phi_central_tendencies = np.zeros(self.dimension_lengths, dtype=(list)) # To contain the central tendency of phi on each theta cycle for the simulation at each coordinate
+
+            if self.mesh_fig_time_series_suppress == False or self.save_mesh_fig_time_series == True:
+                self.neuron_time_series_mesh = np.zeros(self.dimension_lengths, dtype=(list))
+                self.LFP_time_series_mesh = np.zeros(self.dimension_lengths, dtype=(list))
+                self.cycle_boundary_indices_mesh = np.zeros(self.dimension_lengths, dtype=(list))
 
     def generateMeshFigures(self):
 
@@ -135,11 +156,11 @@ class SimulationIterationManager():
 
             # For small axis sizes, set fontsize = 10, otherwise set fontsize = 20/ln(size(largest_subspace))
             if axes.shape[0] < 7 and axes.shape[1] < 7:
-                fontSize = 10
+                font_size = 10
             elif axes.shape[0] < axes.shape[1]:
-                fontSize = 20*(math.log(axes.shape[1]))**-1
+                font_size = 20*(math.log(axes.shape[1]))**-1
             else:
-                fontSize = 20*(math.log(axes.shape[0]))**-1
+                font_size = 20*(math.log(axes.shape[0]))**-1
             
             # Make the right and top figure border for each subfigure invisible
             for row in axes:
@@ -166,9 +187,9 @@ class SimulationIterationManager():
                     axes[row_number, column_number].set_yticks([], minor=True)
 
                     if row_number == len(self.cycle_phi_central_tendencies) - 1:
-                        axes[row_number, column_number].set_xlabel(int(self.parameter_subspaces[0][column_number]), fontsize=fontSize)
+                        axes[row_number, column_number].set_xlabel(int(self.parameter_subspaces[0][column_number]), fontsize=font_size)
                     if column_number == 0:
-                        axes[row_number, column_number].set_ylabel(int(self.parameter_subspaces[1][- row_number - 1]), fontsize=fontSize)
+                        axes[row_number, column_number].set_ylabel(int(self.parameter_subspaces[1][- row_number - 1]), fontsize=font_size)
             
             fig.text(0.5, 0.02, self.parameter_subspace_names[0].replace("_", " ") + " " + self.parameter_subspace_units[0], ha='center')
             fig.text(0.04, 0.5, self.parameter_subspace_names[1].replace("_", " ") + " " + self.parameter_subspace_units[1], va='center', rotation='vertical')
@@ -188,55 +209,52 @@ class SimulationIterationManager():
 
             plt.close()
 
-            fig, axes = plt.subplots(nrows=len(self.parameter_subspaces[1]), ncols=len(self.parameter_subspaces[0]))
-            gridspec = axes[0, 0].get_subplotspec().get_gridspec()
+            fig = plt.figure()
             fig.patch.set_alpha(0.0)
+            root_gridspec = fig.add_gridspec(len(self.parameter_subspaces[1]), len(self.parameter_subspaces[0]), wspace=0.5, hspace=0.5)
 
             # For small axis sizes, set fontsize = 10, otherwise set fontsize = 20/ln(size(largest_subspace))
-            if axes.shape[0] < 7 and axes.shape[1] < 7:
-                fontSize = 10
-            elif axes.shape[0] < axes.shape[1]:
-                fontSize = 20*(math.log(axes.shape[1]))**-1
+            if len(self.parameter_subspaces[1]) < 7 and len(self.parameter_subspaces[0]) < 7:
+                font_size = 10
+            elif len(self.parameter_subspaces[1]) < len(self.parameter_subspaces[0]):
+                font_size = 20*(math.log(len(self.parameter_subspaces[0])))**-1
             else:
-                fontSize = 20*(math.log(axes.shape[0]))**-1
+                font_size = 20*(math.log(len(self.parameter_subspaces[0])))**-1
 
-            # Make the right and top figure border for each subfigure invisible
-            for row in axes:
-                for col in row:
-                    col.spines['top'].set_visible(False)
-                    col.spines['right'].set_visible(False) 
+            for row_number in range(len(self.parameter_subspaces[1])):
+                for column_number in range(len(self.parameter_subspaces[0])):
+                    index = (row_number, column_number)
+                    sub_gridspec = root_gridspec[index].subgridspec(2, 1, wspace=0.1, hspace=0)
+                    axes = [fig.add_subplot(sub_gridspec[0]), fig.add_subplot(sub_gridspec[1])]
 
-            for row_number, row in enumerate(self.neuron_time_series_mesh, start=0):
-                for column_number, data in enumerate(row, start=0):
+                    for ax in axes:
+                        ax.spines['top'].set_visible(False)
+                        ax.spines['right'].set_visible(False)
+                    
+                    print("Data is: {}".format(self.neuron_time_series_mesh[index]))
+                    
+                    axes[0].plot(time_axis, self.neuron_time_series_mesh[index], linewidth=0.25, color='deeppink', label='Vm') # Plot the membrane potential time series
+                    axes[1].plot(time_axis, self.LFP_time_series_mesh[index], linewidth=0.25, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
 
-                    subfig = fig.add_subfigure(gridspec[row_number, column_number])
-                    subfig.patch.set_alpha(0.0) # Make figure background transparent
+                    for boundary_index in self.cycle_boundary_indices_mesh[index]:
+                        axes[1].vlines(time_axis[boundary_index], min(self.LFP_time_series_mesh[index]), max(self.LFP_time_series_mesh[index]), linestyle='dashed', color='k', linewidth=0.25)
 
-                    subaxes = subfig.subplots(nrows=2, sharex=True, sharey=False)
-
-                    for ax in subaxes:
-                        ax.spines['top'].set_visible(False) # Make the top figure border invisible
-                        ax.spines['right'].set_visible(False)# Make the right figure border invisible
-
-                    subaxes[0].plot(time_axis, data, linewidth=0.25, color='deeppink', label='Vm') # Plot the membrane potential time series
-                    subaxes[1].plot(time_axis, self.LFP_time_series_mesh[row_number, column_number], linewidth=0.25, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
-
-                    for boundary_index in cycle_boundary_indices:
-                        axes[1].vlines(Simulation.time_axis[boundary_index], min(Simulation.theta_rhythm), max(Simulation.theta_rhythm), linestyle='dashed', color='k', linewidth=0.8)
-
-                    axes[0].set_ylabel("$V_m$ $(mV)$") # y-axis label of membrane potential time series, in millivolts
-                    axes[1].set_ylabel("$Amplitude$ $(pA)$") # y-axis label of theta rhythm
-                    axes[1].set_xlabel("$Time$ $(ms))$") # Label the x-axis only on the bottommost plot in milliseconds
-
-                    if row_number == len(self.cycle_phi_central_tendencies) - 1:
-                        axes[row_number, column_number].set_xlabel(int(self.parameter_subspaces[0][column_number]), fontsize=fontSize)
-                    if column_number == 0:
-                        axes[row_number, column_number].set_ylabel(int(self.parameter_subspaces[1][- row_number - 1]), fontsize=fontSize)
+                    if index[0] == self.neuron_time_series_mesh.shape[0] - 1:
+                        axes[1].set_xlabel("$Time$ $(ms)$", fontsize=font_size)
+                    if index[1] == 0:
+                        axes[0].set_ylabel("$V_m$ $(mV)$", fontsize=font_size)
+                        axes[1].set_ylabel("$LFP$ $(mV)$", fontsize=font_size)
             
             fig.text(0.5, 0.02, self.parameter_subspace_names[0].replace("_", " ") + " " + self.parameter_subspace_units[0], ha='center')
             fig.text(0.04, 0.5, self.parameter_subspace_names[1].replace("_", " ") + " " + self.parameter_subspace_units[1], va='center', rotation='vertical')
 
-            figureObject = plt.gcf()
+            if self.mesh_fig_time_series_suppress == False:
+                plt.show()
+            if self.save_mesh_fig_time_series == True:
+                manager = plt.get_current_fig_manager()
+                manager.resize(*manager.window.maxsize())
+                figureObject = plt.gcf()
+                figureObject.savefig(Path('/'.join([self.saved_figure_path, 'meshTimeSeries', 'HPC_phi_meshTimeSeries_{}{}{}'.format(date.today().day, date.today().month, self.mesh_fig_time_series_file_type)])), dpi=self.dpi, bbox_inches='tight')
 
     def updateEncodePath(self, update_filename=False): 
         """Generates string filename for serialized data according to format: 
@@ -358,19 +376,15 @@ class SimulationIterationManager():
 
     def analyzeProtobufData(self):
 
-        self.output_list = []
-        self.cycle_phi_central_tendencies = []
-
         self.overall_start_time = time.time()
-        self.num_files_to_decode = len(self.protobuf_files_to_decode)
+        self.iteration_number = 0
 
-        for protobuf_file in self.protobuf_files_to_decode:
+        for coordinate, protobuf_file in np.ndenumerate(self.sorted_protobuf_files_to_decode):
 
             self.protobuf_decode_path = Path('/'.join([self.protobuf_serialized_data_path, protobuf_file]))  
+            self.parameter_space_coordinate = coordinate
 
-            simulation_quantification, cycle_phi_central_tendencies = HPC_phi_simulation(self, execute_simulation=False) 
-            self.output_list.append(simulation_quantification)
-            self.cycle_phi_central_tendencies.append(cycle_phi_central_tendencies)  
+            self.output_mesh[self.parameter_space_coordinate], self.cycle_phi_central_tendencies[self.parameter_space_coordinate] = HPC_phi_simulation(self, execute_simulation=False) 
 
             # On the first iteration use the overall_start_time to report progress
             if self.iteration_number == 0:
@@ -389,7 +403,12 @@ class SimulationIterationManager():
         print("\n===== ALL ITERATIONS FINISHED =====")
         print("===== {} m {} s to decode and analyze all files =====".format(int((time.time() - self.overall_start_time)/60), round(((time.time() - self.overall_start_time)%60)/1, 2)))
  
-        print('Ordered simulation quantifications: {}'.format(self.output_list))     
+        # Print the quantification metric in an array where entries preserve relative location of points on contour plot and mesh figures (flipped and transposed)
+        print('Output mesh: \n{}'.format(np.flipud(np.transpose(self.output_mesh))))
+        
+        # If exactly two parameters were included in the decoded simulations, then the simulation set is eligible for contour plot and mesh figure output
+        if len(self.protobuf_mesh_dimension) == 2:
+            self.generateMeshFigures()    
 class LIFNeuron():
     """Linear 'leak' function leaky integrate-and-fire neuron model with (optional) stochastic input. Defined according to Langevin equation [5.3] in https://neuronaldynamics.epfl.ch/online/Ch5.S1.html
     
@@ -840,7 +859,7 @@ def kernelDensityEstimation(data, SimulationIterationManager, cycle_interval=Tru
         ax.spines['right'].set_visible(False) 
 
         ax.plot(KDE_interval, np.exp(ln_PDF_estimation), color='deeppink', linewidth=0.8) 
-        ax.set_xlabel("$\phi$ $(radians)$", fontsize=13) 
+        ax.set_xlabel("$\phi$ $(radians)$", font_size=13) 
         ax.set_ylabel("$Probability$", fontsize=13) 
 
         xLabelList = [r" ", r"$0$", r"$\frac{1}{3}\pi$", r"$\frac{2}{3}\pi$", r"$\pi$", r"$\frac{4}{3}\pi$", r"$\frac{5}{3}\pi$", r"$2\pi$"] 
@@ -869,40 +888,49 @@ def plotSolution(SimulationIterationManager, Simulation, cycle_boundary_indices)
     
     Optionally, saves the figure to the path specified as a SimulationIterationManager class attribte. File extension is .png, with dpi specified as path.
     """
+    if not SimulationIterationManager.sim_fig_suppress or SimulationIterationManager.save_sim_fig:
+        
+        plt.close()
 
-    plt.close()
+        fig, axes = plt.subplots(nrows=2, sharex=True, sharey=False) # Two graps, two rows, linked x-axes
+        fig.patch.set_alpha(0.0) # Make figure background transparent
 
-    fig, axes = plt.subplots(nrows=2, sharex=True, sharey=False) # Two graps, two rows, linked x-axes
-    fig.patch.set_alpha(0.0) # Make figure background transparent
+        for ax in axes:
+            ax.spines['top'].set_visible(False) # Make the top figure border invisible
+            ax.spines['right'].set_visible(False)# Make the right figure border invisible
 
-    for ax in axes:
-        ax.spines['top'].set_visible(False) # Make the top figure border invisible
-        ax.spines['right'].set_visible(False)# Make the right figure border invisible
+        axes[0].plot(Simulation.time_axis, Simulation.Vm_t, linewidth=0.8, color='deeppink', label='Vm') # Plot the membrane potential time series
+        axes[1].plot(Simulation.time_axis, Simulation.theta_rhythm, linewidth=0.8, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
 
-    axes[0].plot(Simulation.time_axis, Simulation.Vm_t, linewidth=0.8, color='deeppink', label='Vm') # Plot the membrane potential time series
-    axes[1].plot(Simulation.time_axis, Simulation.theta_rhythm, linewidth=0.8, color='deeppink', label='LFP') # Plot the theta rhythm (or other neural input signal) time series
+        for boundary_index in cycle_boundary_indices:
+            axes[1].vlines(Simulation.time_axis[boundary_index], min(Simulation.theta_rhythm), max(Simulation.theta_rhythm), linestyle='dashed', color='k', linewidth=0.8)
 
-    for boundary_index in cycle_boundary_indices:
-        axes[1].vlines(Simulation.time_axis[boundary_index], min(Simulation.theta_rhythm), max(Simulation.theta_rhythm), linestyle='dashed', color='k', linewidth=0.8)
-
-    axes[0].set_ylabel("$V_m$ $(mV)$") # y-axis label of membrane potential time series, in millivolts
-    axes[1].set_ylabel("$Amplitude$ $(pA)$") # y-axis label of theta rhythm
-    axes[1].set_xlabel("$Time$ $(ms))$") # Label the x-axis only on the bottommost plot in milliseconds
-    
-    if SimulationIterationManager.save_sim_fig:
-        plt.savefig(Path('/'.join([SimulationIterationManager.saved_figure_path, 'timeSeries', 'HPC_phi_iteration{}.png'.format(SimulationIterationManager.iteration_number)])), dpi=SimulationIterationManager.dpi, bbox_inches='tight') 
-    if not SimulationIterationManager.sim_fig_suppress:
-        plt.show()
+        axes[0].set_ylabel("$V_m$ $(mV)$") # y-axis label of membrane potential time series, in millivolts
+        axes[1].set_ylabel("$Amplitude$ $(pA)$") # y-axis label of theta rhythm
+        axes[1].set_xlabel("$Time$ $(ms))$") # Label the x-axis only on the bottommost plot in milliseconds
+        
+        if SimulationIterationManager.save_sim_fig:
+            plt.savefig(Path('/'.join([SimulationIterationManager.saved_figure_path, 'timeSeries', 'HPC_phi_iteration{}.png'.format(SimulationIterationManager.iteration_number)])), dpi=SimulationIterationManager.dpi, bbox_inches='tight') 
+        if not SimulationIterationManager.sim_fig_suppress:
+            plt.show()
         
     if SimulationIterationManager.mesh_fig_time_series_suppress == False or SimulationIterationManager.save_mesh_fig_time_series == True:
         num_timesteps_to_plot = int(3000/SimulationIterationManager.dt)
+        first_cycle_boundary_of_interest = len(Simulation.time_axis) - num_timesteps_to_plot - 1
         if len(Simulation.time_axis) >= num_timesteps_to_plot:
-            SimulationIterationManager.neuron_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.Vm_t[-num_timesteps_to_plot:].tolist()
-            SimulationIterationManager.LFP_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.theta_rhythm[-num_timesteps_to_plot:].tolist()
+            SimulationIterationManager.neuron_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.Vm_t[-num_timesteps_to_plot:]
+            SimulationIterationManager.LFP_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.theta_rhythm[-num_timesteps_to_plot:]
+            for index, cycle_boundary in enumerate(cycle_boundary_indices, start=0):
+                if cycle_boundary >= first_cycle_boundary_of_interest:
+                    start_index = index
+                    break
+            SimulationIterationManager.cycle_boundary_indices_mesh[SimulationIterationManager.parameter_space_coordinate] = cycle_boundary_indices[start_index:]
+
         else:
-            SimulationIterationManager.neuron_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.Vm_t[:].tolist()
-            SimulationIterationManager.LFP_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.theta_rhythm[:].tolist()
-def constructReturnMap(SimulationIterationManager, cycle_phi_central_tendencies, ):
+            SimulationIterationManager.neuron_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.Vm_t[:]
+            SimulationIterationManager.LFP_time_series_mesh[SimulationIterationManager.parameter_space_coordinate] = Simulation.theta_rhythm[:]
+            SimulationIterationManager.cycle_boundary_indices_mesh[SimulationIterationManager.parameter_space_coordinate] = cycle_boundary_indices[:]
+def constructReturnMap(SimulationIterationManager, cycle_phi_central_tendencies):
     """Computes vector of phi_{k-1} - phi_{k} for one simulation, then optionally plots these points with line of identity for reference
     """
     try:
@@ -998,8 +1026,7 @@ def simulationAnalysis(SimulationIterationManager, Simulation, execute_simulatio
     cycle_phi_central_tendencies, cycle_boundary_indices = computeCyclePhiCentralTendency(SimulationIterationManager, theta_phase_time_series, spike_phi)
 
     # Plot simulation output and Return map
-    if not SimulationIterationManager.sim_fig_suppress or SimulationIterationManager.save_sim_fig:
-        plotSolution(SimulationIterationManager, Simulation, cycle_boundary_indices)
+    plotSolution(SimulationIterationManager, Simulation, cycle_boundary_indices)
 
     # Get reverse discrete differences of cycle phi with optional return map plot
     return_map_coordinate_differences = constructReturnMap(SimulationIterationManager, cycle_phi_central_tendencies)
@@ -1021,7 +1048,7 @@ def main():
     global INPUT_SPECIFICATION_DICTIONARY
     INPUT_SPECIFICATION_DICTIONARY = {# Time parameters
                                       'dt': 0.01,                                   
-                                      'simulation_duration': 5000,  
+                                      'simulation_duration': 1000,  
         
                                       # Dual oscillator input parameters
                                       'theta_amplitude': 100,                       
@@ -1052,12 +1079,13 @@ def main():
                                        'kernel_bandwidth': 1.5, 
 
                                        # Figure popup suppression options 
-                                       'sim_fig_suppress': False,                                          
-                                       'return_map_suppress': False,                                           
+                                       'sim_fig_suppress': True,                                          
+                                       'return_map_suppress': True,                                           
                                        'central_tendency_PDF_estimation_suppress': True,                                       
                                        'return_map_PDF_estimation_suppress': True,                                           
                                        'contour_plot_suppress': True,                                       
-                                       'mesh_fig_suppress': True,                                         
+                                       'mesh_fig_suppress': True, 
+                                       'mesh_fig_time_series_suppress': False,                                        
                                        
                                        # Figure saving options
                                        'saved_figure_path': '/'.join([os.getcwd(), 'modelFigures']),
@@ -1065,25 +1093,28 @@ def main():
                                        'save_sim_fig': False,                       
                                        'save_return_map': False,                     
                                        'save_contour_plot': False,                    
-                                       'save_mesh_fig': False,                                        
+                                       'save_mesh_fig': False, 
+                                       'save_mesh_fig_time_series': True,                                       
                                        
                                        # Figure filetype options
                                        'contour_plot_file_type': '.svg',              
                                        'mesh_fig_file_type': '.svg',
+                                       'mesh_fig_time_series_file_type': '.png',
                                        
                                        # Protocol buffer options
                                        'protobuf_serialized_data_path': '/'.join([os.getcwd(), 'serializedSims']),
                                        'encode_simulation_output': False,
                                        'decode_simulation_output': False,
-                                       'protobuf_files_to_decode': ['_theta_amplitude_interference_amplitude_10_10_1_10_10_1_09062021_0.pb.bin']} 
+                                       'protobuf_files_to_decode': ['_theta_amplitude_interference_amplitude_10_10_1_10_10_1_09062021_0.pb.bin'],
+                                       'protobuf_mesh_dimension': 2}  
 
     # Instantiate program specification objects
     InputSpecificationsObject = InputSpecifications(**INPUT_SPECIFICATION_DICTIONARY)
     OutputSpecificationsObject = OutputSpecifications(**OUTPUT_SPECIFICATION_DICTIONARY)
 
     # Add to and seal the parameter subspace to iterate over
-    InputSpecificationsObject.newParameterSubspace('theta_amplitude', '(mV)', lambda q: q*10, 1, 1, 1)
-    InputSpecificationsObject.newParameterSubspace('interference_amplitude', '(mV)', lambda q: q*10, 1, 1, 1)
+    InputSpecificationsObject.newParameterSubspace('theta_amplitude', '(mV)', lambda q: q*10, 1, 1, 2)
+    InputSpecificationsObject.newParameterSubspace('interference_amplitude', '(mV)', lambda q: q*10, 1, 1, 2)
     InputSpecificationsObject.sealParameterSubspace()
 
     # Pass specifications into the iteration manager, then run analysis through the selected 
