@@ -1,4 +1,3 @@
-import itertools
 import math
 import os
 import time
@@ -21,7 +20,7 @@ from numba_ufuncs import (scalar_add, condit_add,
                                   condit_assign_bool, condit_assign_num,
                                   hadamard, ornstein_uhlenbeck,
                                   subthresh_SASLIF_integrate, integer_add,
-                                  stack_topography_flatten)
+                                  stack_topography_flatten, heterogenous_normal)
 
 # Pipeline manager
 class PipelineManager():
@@ -39,6 +38,7 @@ class PipelineManager():
         self.probe_TS = False
         self.probe_RM = False
         self.date_of_sim = datetime.now()
+        self.no_V = False
 
         if self.theta_frequency < self.interference_frequency:
             self.ground_truth = 'precession'
@@ -55,6 +55,56 @@ class PipelineManager():
         else:
             sg.theme('Black')
     
+    def _init_forcing(self):
+
+        # Infer subspace sizes from class attribute dictionary
+        with warnings.catch_warnings():
+            warnings.simplefilter(action='ignore', category=FutureWarning)  
+            theta_subset_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('theta_amplitude')].split('_')[:2])
+            interference_subset_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('theta_amplitude')].split('_')[:2])
+
+        # Synthetic theta rhythm for phase extraction later
+        theta_rhythm = np.sin(2*np.pi*self.theta_frequency/1000*self.dt*np.arange(self.num_timesteps))
+
+        # Create parameter mesh so simulation can generate forcing current internally
+        forcing_amplitude_mesh = np.transpose(np.array(np.meshgrid(self.__dict__[theta_subset_key], self.__dict__[interference_subset_key])))
+
+        return forcing_amplitude_mesh, theta_rhythm, theta_subset_key, interference_subset_key
+    
+    def _init_neurodynamics(self):
+
+        # Infer subspace sizes from class attribute dictionary
+        with warnings.catch_warnings():
+            warnings.simplefilter(action='ignore', category=FutureWarning)
+            response_constant_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('response_constant')].split('_')[:2])
+            decay_constant_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('decay_constant')].split('_')[:2])
+
+        # Forcing function over entire mesh
+        theta_rhythm = self.theta_amplitude*np.sin(2*np.pi*self.theta_frequency/1000*self.dt*np.arange(self.num_timesteps))
+        interference_rhythm = self.interference_amplitude*np.sin(2*np.pi*self.interference_frequency/1000*self.dt*np.arange(self.num_timesteps))
+        forcing_function = np.sum((theta_rhythm, interference_rhythm), axis=0)
+
+        neurodynamic_parameter_mesh = np.transpose(np.array(np.meshgrid(self.__dict__[response_constant_key], self.__dict__[decay_constant_key])))
+
+        return neurodynamic_parameter_mesh, theta_rhythm, forcing_function, response_constant_key, decay_constant_key
+    
+    def _init_stochastic(self):
+
+        # Infer subspace sizes from class attribute dictionary
+        with warnings.catch_warnings():
+            warnings.simplefilter(action='ignore', category=FutureWarning)
+            OU_mu_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('OU_mu')].split('_')[:2])
+            OU_sigma_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('OU_sigma')].split('_')[:2])
+
+        # Forcing function over entire mesh
+        theta_rhythm = self.theta_amplitude*np.sin(2*np.pi*self.theta_frequency/1000*self.dt*np.arange(self.num_timesteps))
+        interference_rhythm = self.interference_amplitude*np.sin(2*np.pi*self.interference_frequency/1000*self.dt*np.arange(self.num_timesteps))
+        forcing_function = np.sum((theta_rhythm, interference_rhythm), axis=0)
+
+        stochastic_parameter_mesh = np.transpose(np.array(np.meshgrid(self.__dict__[OU_mu_key], self.__dict__[OU_sigma_key])))
+
+        return stochastic_parameter_mesh, theta_rhythm, forcing_function, OU_mu_key, OU_sigma_key
+
     def add_parameter_subset(self, start: float, stop: float, num: int, name: str):
       
         self.__dict__.update({f'subset_{self.num_subsets + 1}': np.linspace(start, stop, num)})
@@ -71,66 +121,6 @@ class PipelineManager():
         self.probe_RM = True
         self.probe_RM_coordinate = coordinate
         
-    def initialize_subspace(self, mesh_type: str, reconstruct_from_decode=False):
-
-        if reconstruct_from_decode == True:
-            theta_vector = 2*np.pi*self.theta_frequency/1000*self.dt*np.arange(self.num_timesteps)
-            theta_rhythm = self.theta_amplitude*np.sin(theta_vector)
-            return theta_rhythm
-
-
-        t_init_start = time.time()
-        print('\n')
-        mesh_shape = (self.subset_1.size, self.subset_2.size)
-
-        parameter_subspace_mesh = list(itertools.product(*[range(s) for s in mesh_shape]))
-
-        if self.DOI == True:
-
-            theta_vector = 2*np.pi*self.theta_frequency/1000*self.dt*np.arange(self.num_timesteps)
-            interference_vector = 2*np.pi*self.interference_frequency/1000*self.dt*np.arange(self.num_timesteps)
-
-            if mesh_type != 'forcing':
-                
-                theta_rhythm = self.theta_amplitude*np.sin(theta_vector)
-                interference_rhythm = self.interference_amplitude*np.sin(interference_vector)
-                forcing_function = np.sum((theta_rhythm, interference_rhythm), axis=0)
-
-            else:
-
-                forcing_function_bundle = np.zeros((self.subset_1.size, self.subset_2.size, self.num_timesteps), dtype=np.single)
-
-                for coordinate in enumerate(tqdm(parameter_subspace_mesh, desc='Generating forcing functions'), start=0):
-
-                    theta_rhythm = self.subset_1[coordinate[1][0]]*np.sin(theta_vector)
-                    interference_rhythm = self.subset_2[coordinate[1][1]]*np.sin(interference_vector)
-                    forcing_function_bundle[coordinate[1][0], coordinate[1][1], :] = np.sum((theta_rhythm, interference_rhythm), axis=0)
-        
-                t_init_end = time.time() 
-
-                print(f"Time to initialize: {(t_init_end - t_init_start):.2f} s")
-        
-                return forcing_function_bundle, theta_rhythm
-
-        elif self.DOI == False:
-            
-            forcing_function = np.ones((self.num_timesteps,))*self.theta_amplitude
-            theta_rhythm = forcing_function
-
-        if mesh_type == 'neurodynamics':
-    
-            neurodynamic_parameter_bundle = np.zeros((self.subset_1.size, self.subset_2.size, 2), dtype=np.single)
-
-            for coordinate in enumerate(tqdm(parameter_subspace_mesh, desc='Generating neurodynamic parameter mesh'), start=0):
-                neurodynamic_parameter_bundle[coordinate[1][0], coordinate[1][1], 0] = self.subset_1[coordinate[1][0]] 
-                neurodynamic_parameter_bundle[coordinate[1][0], coordinate[1][1], 1] = self.subset_2[coordinate[1][1]]
-
-                t_init_end = time.time() 
-
-                print(f"Time to initialize: {(t_init_end - t_init_start):.2f} s")
-
-            return neurodynamic_parameter_bundle, forcing_function, theta_rhythm
-
     def execute_pipeline(self, mesh_type: str):
         
         # Initialize simulation file name and encode path
@@ -154,17 +144,7 @@ class PipelineManager():
                 # Forcing parameter subspace
                 if mesh_type == 'forcing':
 
-                    # Infer subspace sizes from class attribute dictionary
-                    with warnings.catch_warnings():
-                        warnings.simplefilter(action='ignore', category=FutureWarning)  
-                        theta_subset_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('theta_amplitude')].split('_')[:2])
-                        interference_subset_key = '_'.join(list(self.__dict__.keys())[list(self.__dict__.values()).index('theta_amplitude')].split('_')[:2])
-
-                    # Synthetic theta rhythm for phase extraction later
-                    theta_rhythm = np.sin(2*np.pi*self.theta_frequency/1000*self.dt*np.arange(self.num_timesteps))
- 
-                    # Create parameter mesh so simulation can generate forcing current internally
-                    forcing_amplitude_mesh = np.transpose(np.array(np.meshgrid(self.__dict__[theta_subset_key], self.__dict__[interference_subset_key])))
+                    forcing_amplitude_mesh, theta_rhythm, theta_subset_key, interference_subset_key = self._init_forcing()
 
                     t0 = time.time()
                     spike_stack = HPC_phi_6_sim_forcing_subspace_ARC(
@@ -186,18 +166,68 @@ class PipelineManager():
                         self.OU_sigma,
                         self.OU_mu,
                         self.OU_time_constant
-                        )
+                    )
                     t1 = time.time()
 
-                    # Summarize simulation output
-                    print(f"Simulation output construct sizes:\n     - Spike times matrix: {spike_stack.nbytes/1000000:.2f} MB")
-                    print(f"Time to simulate: {(t1 - t0):.2f} s\n")
-                    print(f'Spike times matrix shape: {spike_stack.shape}\n')
+                # Adaptation parameter subspace
+                if mesh_type == 'neurodynamics':
 
-                    # Encode simulation if requested
-                    if self.encode == True:
+                    neurodynamic_parameter_mesh, theta_rhythm, forcing_function, response_constant_key, decay_constant_key = self._init_neurodynamics()
 
-                        handle_sim_encoding(self.sim_spec_dict, self.encode_path, spike_stack=spike_stack, encode=True, decode=False)
+                    t0 = time.time()
+                    spike_stack = HPC_phi_6_sim_neurodynamic_subspace_ARC(
+                        forcing_function,
+                        neurodynamic_parameter_mesh,
+                        self.__dict__[response_constant_key].size, 
+                        self.__dict__[decay_constant_key].size, 
+                        self.simulation_duration, 
+                        self.dt,
+                        self.neuron_threshold,
+                        self.neuron_time_constant,
+                        self.rest_V,
+                        self.spike_V,
+                        self.refractory_period_duration,
+                        self.adaptation_time_constant,
+                        self.OU_sigma,
+                        self.OU_mu,
+                        self.OU_time_constant
+                    )
+                    t1 = time.time()
+
+                # Stochastic parameter subspace
+                if mesh_type == 'stochastic':
+
+                    stochastic_parameter_mesh, theta_rhythm, forcing_function, OU_mu_key, OU_sigma_key = self._init_stochastic()
+
+                    t0 = time.time()
+                    spike_stack = HPC_phi_6_sim_stochastic_subspace_ARC(
+                        forcing_function,
+                        stochastic_parameter_mesh,
+                        self.__dict__[OU_mu_key].size,
+                        self.__dict__[OU_sigma_key].size,
+                        self.simulation_duration,
+                        self.dt,
+                        self.neuron_threshold,
+                        self.neuron_time_constant,
+                        self.rest_V,
+                        self.spike_V,
+                        self.refractory_period_duration,
+                        self.adaptation_response_constant,
+                        self.adaptation_decay_constant,
+                        self.adaptation_time_constant,
+                        self.OU_time_constant
+                    )
+                    t1 = time.time()
+
+                # Summarize simulation output
+                print(f"Simulation output construct sizes:\n     - Spike times matrix: {spike_stack.nbytes/1000000:.2f} MB")
+                print(f"Time to simulate: {(t1 - t0):.2f} s\n")
+                print(f'Spike times matrix shape: {spike_stack.shape}\n')
+
+                # Encode simulation if requested
+                if self.encode == True:
+
+                    handle_sim_encoding(self.sim_spec_dict, self.encode_path, spike_stack=spike_stack, encode=True, decode=False)
 
             # Simulating on PC
             elif self.ARC == False:
@@ -205,13 +235,15 @@ class PipelineManager():
                 # Forcing parameter subspace
                 if mesh_type == 'forcing':
 
-                    forcing_function_bundle, theta_rhythm = self.initialize_subspace(mesh_type)
+                    forcing_amplitude_mesh, theta_rhythm, theta_subset_key, interference_subset_key = self._init_forcing()
 
                     t0 = time.time()
                     Vm_t, spike_stack = HPC_phi_6_sim_forcing_subspace(
-                        forcing_function_bundle,
-                        self.subset_1.size,
-                        self.subset_2.size,
+                        forcing_amplitude_mesh,
+                        self.theta_frequency,
+                        self.interference_frequency,
+                        self.__dict__[theta_subset_key].size,
+                        self.__dict__[interference_subset_key].size,
                         self.simulation_duration,
                         self.dt,
                         self.neuron_threshold,
@@ -231,14 +263,14 @@ class PipelineManager():
                 # Adaptation parameter subspace
                 if mesh_type == 'neurodynamics':
 
-                    neurodynamic_parameter_bundle, forcing_function, theta_rhythm = self.initialize_subspace(mesh_type)
+                    neurodynamic_parameter_mesh, theta_rhythm, forcing_function, response_constant_key, decay_constant_key = self._init_neurodynamics()
 
                     t0 = time.time()
-                    Vm_t, spike_indices = HPC_phi_6_sim_neurodynamic_subspace(
+                    Vm_t, spike_stack = HPC_phi_6_sim_neurodynamic_subspace(
                         forcing_function,
-                        neurodynamic_parameter_bundle,
-                        self.subset_1.size,
-                        self.subset_2.size,
+                        neurodynamic_parameter_mesh,
+                        self.__dict__[response_constant_key].size,
+                        self.__dict__[decay_constant_key].size,
                         self.simulation_duration,
                         self.dt,
                         self.neuron_threshold,
@@ -246,16 +278,42 @@ class PipelineManager():
                         self.rest_V,
                         self.spike_V,
                         self.refractory_period_duration,
+                        self.adaptation_time_constant,
                         self.OU_sigma,
                         self.OU_mu,
                         self.OU_time_constant
                     )
                     t1 = time.time()
 
+                # Stochastic parameter subspace
+                if mesh_type == 'stochastic':
+
+                    stochastic_parameter_mesh, theta_rhythm, forcing_function, OU_mu_key, OU_sigma_key = self._init_stochastic()
+
+                    t0 = time.time()
+                    Vm_t, spike_stack = HPC_phi_6_sim_stochastic_subspace(
+                        forcing_function,
+                        stochastic_parameter_mesh,
+                        self.__dict__[OU_mu_key].size,
+                        self.__dict__[OU_sigma_key].size,
+                        self.simulation_duration,
+                        self.dt,
+                        self.neuron_threshold,
+                        self.neuron_time_constant,
+                        self.rest_V,
+                        self.spike_V,
+                        self.refractory_period_duration,
+                        self.adaptation_response_constant,
+                        self.adaptation_decay_constant,
+                        self.adaptation_time_constant,
+                        self.OU_time_constant
+                    )
+                    t1 = time.time()
+
                 # Summarize simulation output
-                print(f"Simulation output construct sizes:\n     - V block: {Vm_t.nbytes/1000000:.2f} MB\n     - Spike times matrix: {spike_indices.nbytes/1000000:.2f} MB")
+                print(f"Simulation output construct sizes:\n     - V block: {Vm_t.nbytes/1000000:.2f} MB\n     - Spike times matrix: {spike_stack.nbytes/1000000:.2f} MB")
                 print(f"Time to simulate: {(t1 - t0):.2f} s\n")
-                print(f'Spike times matrix shape: {spike_indices.shape}\n Spike times matrix sum: {np.sum(spike_indices)}')
+                print(f'Spike times matrix shape: {spike_stack.shape}\n')
 
                 # Plot sample output if requested
                 if self.probe_TS == True:
@@ -271,7 +329,7 @@ class PipelineManager():
 
                     handle_sim_encoding(self.sim_spec_dict, self.encode_path, V=Vm_t, spike_stack=spike_stack, encode=True, decode=False)
        
-       # Decoding previously simulated data
+        # Decoding previously simulated data
         elif self.decode == True:
 
             # If on PC, popup to select encode path
@@ -283,13 +341,13 @@ class PipelineManager():
             self.__dict__.update(decoded_sim_specifications)
 
             # Reconstruct theta rhythm using parameters at original time of simulation
-            theta_rhythm = self.initialize_subspace(mesh_type, reconstruct_from_decode=True)
+            theta_rhythm = self.theta_amplitude*np.sin(2*np.pi*self.theta_frequency/1000*self.dt*np.arange(self.num_timesteps))
 
         # Analysis pipeline (contingent on there having been a dual-oscillator input (DOI))
         if self.DOI == True:
 
             # Construct the block of mean phase on each cycle (0 for cycles with no spikes)
-            cycle_phi_block, cycle_boundary_indices = HPC_phi_phase_analysis_prototype(spike_stack, hilbert(theta_rhythm))
+            cycle_phi_block, cycle_boundary_indices = HPC_phi_phase_analysis(spike_stack, hilbert(theta_rhythm))
 
             # Plot sample return map if requested
             if self.probe_RM == True:
@@ -308,6 +366,7 @@ class PipelineManager():
                     Vm_t = np.flipud(np.transpose(Vm_t, (1, 0, 2)))
                 except ValueError:
                     Vm_t = Vm_t 
+                    self.no_V = True
                 RMQ_array = np.flipud(np.transpose(RMQ_array))
 
             print(f"RMQ array :\n{np.around(RMQ_array, decimals=3)}")
@@ -334,21 +393,22 @@ class PipelineManager():
                 figure_path=self.figure_path
                 )
             if self.ARC == False: 
-                TS_meshfig(
-                    Vm_t, 
-                    theta_rhythm, 
-                    cycle_boundary_indices, 
-                    self.simulation_duration,
-                    self.dt, 
-                    self.subset_1, 
-                    self.subset_2, 
-                    self.subset_1_name, 
-                    self.subset_2_name, 
-                    self.mesh_fig_dimensions[0], 
-                    self.mesh_fig_dimensions[1], 
-                    suppress=self.TS_mesh_suppress, 
-                    figure_path=self.figure_path
-                    )
+                if self.no_V == False:
+                    TS_meshfig(
+                        Vm_t, 
+                        theta_rhythm, 
+                        cycle_boundary_indices, 
+                        self.simulation_duration,
+                        self.dt, 
+                        self.subset_1, 
+                        self.subset_2, 
+                        self.subset_1_name, 
+                        self.subset_2_name, 
+                        self.mesh_fig_dimensions[0], 
+                        self.mesh_fig_dimensions[1], 
+                        suppress=self.TS_mesh_suppress, 
+                        figure_path=self.figure_path
+                        )
         
         # No analysis, just plot output
         elif self.DOI == False and self.ARC == False:
@@ -381,7 +441,9 @@ class PipelineManager():
 # Compiled pipeline functions
 @nb.njit
 def HPC_phi_6_sim_forcing_subspace(
-    forcing,
+    forcing_amplitude_mesh,
+    theta_frequency,
+    interference_frequency,
     subspace_1_size, 
     subspace_2_size, 
     simulation_duration, 
@@ -402,7 +464,7 @@ def HPC_phi_6_sim_forcing_subspace(
     """
     Simulates a mesh of uncoupled SASLIF neurons receiving different forcing.
     
-    Unlike the ARC variant, forcing is passed in as a 3d array and voltage time series are saved.
+    Unlike the ARC variant, voltage time series are saved.
     """
 
     # Initialize integer constants
@@ -426,11 +488,6 @@ def HPC_phi_6_sim_forcing_subspace(
     spike_stack = np.zeros((subspace_1_size, subspace_2_size, stack_height), dtype=nb.int32) # To contain indices of each spike along axis 2
     stack_topography = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.int64) # 2d array indicating 'height' of each column when visualized from above
 
-    spike_times_matrix = np.zeros((subspace_1_size, subspace_2_size, num_timesteps), dtype=nb.bool_)
-
-    # Generate stochastic element
-    random_numbers = np.random.normal(loc=OU_mu, scale=1.0, size=(subspace_1_size, subspace_2_size, num_timesteps)).astype(nb.float32)
-
     # Initialize equation constants
     adaptation_decay_rate = adaptation_decay_constant/adaptation_time_constant
     weiner_coefficient = nb.float32(OU_sigma*math.sqrt(dt*OU_time_constant))
@@ -441,18 +498,28 @@ def HPC_phi_6_sim_forcing_subspace(
     refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
     refractory_period_matrix = condit_assign_num(refractory_period_matrix, refractory_period_matrix > refractory_period_length, 0)
 
+    forcing_amplitude_mesh = forcing_amplitude_mesh.astype(nb.float32) # For compatibility with vectorized functions
+
     print('\n')
     for step in range(1, num_timesteps):
+
+        # Generate forcing mesh from parameters
+        theta = hadamard(forcing_amplitude_mesh[:, :, 0], nb.float32(np.sin(2*np.pi*theta_frequency/1000*dt*step)))
+        interference = hadamard(forcing_amplitude_mesh[:, :, 1], nb.float32(np.sin(2*np.pi*interference_frequency/1000*dt*step)))
+        forcing = scalar_add(theta, interference)
+
+        # Generate stochastic element
+        random_numbers = np.random.normal(loc=OU_mu, scale=1.0, size=(subspace_1_size, subspace_2_size)).astype(nb.float32)
 
         # Update adaptation depending on neuron state (subthreshold/suprathreshold)
         W = condit_add(W, spike_state_matrix, nb.float32(dt*adaptation_response_constant))
         W = condit_add(W, True, nb.float32(-dt*adaptation_decay_rate)*W)
 
         # Update Ornstein-Uhlenback noise contribution
-        xi = ornstein_uhlenbeck(xi, OU_mu, OU_time_constant, dt, weiner_coefficient, random_numbers[:, :, step])
+        xi = ornstein_uhlenbeck(xi, OU_mu, OU_time_constant, dt, weiner_coefficient, random_numbers[:, :])
 
         # Conditionally integrate voltage
-        V[:, :, step] = subthresh_SASLIF_integrate(V[:, :, step - 1], ~spike_state_matrix, dt, rest_V, forcing[:, :, step], W[:, :], neuron_time_constant, xi[:, :])
+        V[:, :, step] = subthresh_SASLIF_integrate(V[:, :, step - 1], ~spike_state_matrix, dt, rest_V, forcing[:, :], W[:, :], neuron_time_constant, xi[:, :])
         V[:, :, step] = condit_assign_num(V[: , :, step], spike_state_matrix & (refractory_period_matrix <= refractory_period_length), spike_V)
         V[:, :, step] = condit_assign_num(V[: , :, step], spike_state_matrix & (refractory_period_matrix > refractory_period_length), rest_V)
 
@@ -486,7 +553,7 @@ def HPC_phi_6_sim_forcing_subspace(
                 print ("\033[A                             \033[A") 
                 print('Simulation progress: 100.0% - COMPLETE')
 
-    return V, spike_times_matrix
+    return V, spike_stack
 @nb.njit
 def HPC_phi_6_sim_forcing_subspace_ARC(
     forcing_amplitude_mesh,
@@ -607,7 +674,7 @@ def HPC_phi_6_sim_forcing_subspace_ARC(
 @nb.njit
 def HPC_phi_6_sim_neurodynamic_subspace(
     forcing,
-    neurodynamic_parameter_bundle,
+    neurodynamic_parameter_mesh,
     subspace_1_size, 
     subspace_2_size, 
     simulation_duration, 
@@ -617,62 +684,92 @@ def HPC_phi_6_sim_neurodynamic_subspace(
     rest_V,
     spike_V,
     refractory_period_duration,
+    adaptation_time_constant,
     OU_sigma,
     OU_mu,
     OU_time_constant,
     track_progress=True
     ):
+    """
+    Simulates a mesh of uncoupled SASLIF neurons with different adaptation variables.
+    
+    Unlike the ARC variant, voltage time series are saved.
+    """
 
+    # For compatibility with vectorized functions
+    neurodynamic_parameter_mesh = neurodynamic_parameter_mesh.astype(nb.float32) 
+    forcing = forcing.astype(nb.float32)
+
+    # Initialize integer constants
     num_timesteps = int(simulation_duration/dt)
     refractory_period_length = int(refractory_period_duration/dt)
 
+    # Initialize system variable arrays
     V = np.ones((subspace_1_size, subspace_2_size, num_timesteps), dtype=nb.float32)
     V = hadamard(V, rest_V)
     xi = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
     W = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
      
+    # Initialize neuron state arrays
     spike_state_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.bool_)
     refractory_period_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
-    spike_times_matrix = np.zeros((subspace_1_size, subspace_2_size, num_timesteps), dtype=nb.float32)
-
-    random_numbers = np.random.normal(loc=OU_mu, scale=1.0, size=(subspace_1_size, subspace_2_size, num_timesteps)).astype(nb.float32)
-
-    weiner_coefficient = nb.float32(OU_sigma*math.sqrt(dt*OU_time_constant))
-
     subthreshold_matrix = V[:, :, 0] < neuron_threshold
     suprathreshold_matrix = ~subthreshold_matrix
 
+    # Initialize output arrays
+    stack_height = 5000 # Maximum number of spikes supported per neuron
+    spike_stack = np.zeros((subspace_1_size, subspace_2_size, stack_height), dtype=nb.int32) # To contain indices of each spike along axis 2
+    stack_topography = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.int64) # 2d array indicating 'height' of each column when visualized from above
+
+    # Initialize equation constants
+    neurodynamic_parameter_mesh[:, :, 1] = neurodynamic_parameter_mesh[:, :, 1]*((-dt)/adaptation_time_constant)
+    weiner_coefficient = nb.float32(OU_sigma*math.sqrt(dt*OU_time_constant))
+
+    # Initialize mesh state
     spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
     spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
-
     refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
     refractory_period_matrix = condit_assign_num(refractory_period_matrix, refractory_period_matrix > refractory_period_length, 0)
 
     print('\n')
     for step in range(1, num_timesteps):
 
-        W = condit_add(W, spike_state_matrix, dt*neurodynamic_parameter_bundle[:, :, 0])
-        W = condit_add(W, True, hadamard(W, -dt*neurodynamic_parameter_bundle[:, :, 1]))
+        # Generate stochastic element
+        random_numbers = np.random.normal(loc=OU_mu, scale=1.0, size=(subspace_1_size, subspace_2_size)).astype(nb.float32)
 
-        xi = ornstein_uhlenbeck(xi, OU_mu, OU_time_constant, dt, weiner_coefficient, random_numbers[:, :, step])
+        # Update adaptation depending on neuron state (subthreshold/suprathreshold)
+        W = condit_add(W, spike_state_matrix, neurodynamic_parameter_mesh[:, :, 0]*dt)
+        W = condit_add(W, True, hadamard(neurodynamic_parameter_mesh[:, :, 1], W))
 
+        # Update Ornstein-Uhlenbeck noise contribution
+        xi = ornstein_uhlenbeck(xi, OU_mu, OU_time_constant, dt, weiner_coefficient, random_numbers[:, :])
+
+        # Conditionally integrate voltage
         V[:, :, step] = subthresh_SASLIF_integrate(V[:, :, step - 1], ~spike_state_matrix, dt, rest_V, forcing[step], W[:, :], neuron_time_constant, xi[:, :])
         V[:, :, step] = condit_assign_num(V[: , :, step], spike_state_matrix & (refractory_period_matrix <= refractory_period_length), spike_V)
         V[:, :, step] = condit_assign_num(V[: , :, step], spike_state_matrix & (refractory_period_matrix > refractory_period_length), rest_V)
 
+        # Reset refractory period wherever it exceeds the absolute duration
         refractory_period_matrix = condit_assign_num(refractory_period_matrix, (refractory_period_matrix > refractory_period_length), 0)
 
+        # Update neuron state arrays
         subthreshold_matrix = V[:, :, step] < neuron_threshold
         suprathreshold_matrix = ~subthreshold_matrix
-
-
         spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
         spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
 
-        spike_times_matrix[:, :, step] = condit_assign_num(spike_times_matrix[:, :, step], spike_state_matrix & (refractory_period_matrix == 0), 1)
+        # Log all spikes for this index
+        x, y = np.where((spike_state_matrix == True) & (refractory_period_matrix == 0)) # Coordinates where neurons were newly assigned to the spike state
+        z = np.ones((x.shape[0],), dtype=nb.int64) # Initialize a vector for the index of the top of each column
+        for i in range(x.shape[0]):
+            z[i] = stack_topography_flatten(z[i], stack_topography[x[i], y[i]]) # Take heights wherever a spike was recorded
+            spike_stack[x[i], y[i], z[i]] = step # Assign the current index to each coordinate in the stack
+            stack_topography[x[i], y[i]] = integer_add(stack_topography[x[i], y[i]], 1) # Increment the topography wherever a spike was added
 
+        # Increment refractory period state for neurons which recently fired
         refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
 
+        # Numba nopython JIT friendly progress bar
         if track_progress == True:
             if step % 100000 == 0:
                 print ("\033[A                             \033[A")
@@ -682,10 +779,341 @@ def HPC_phi_6_sim_neurodynamic_subspace(
                 print ("\033[A                             \033[A") 
                 print('Simulation progress: 100.0% - COMPLETE')
 
-    return V, spike_times_matrix
+    return V, spike_stack
+@nb.njit
+def HPC_phi_6_sim_neurodynamic_subspace_ARC(
+    forcing,
+    neurodynamic_parameter_mesh,
+    subspace_1_size, 
+    subspace_2_size, 
+    simulation_duration, 
+    dt,
+    neuron_threshold,
+    neuron_time_constant,
+    rest_V,
+    spike_V,
+    refractory_period_duration,
+    adaptation_time_constant,
+    OU_sigma,
+    OU_mu,
+    OU_time_constant,
+    track_progress=True
+    ):
+    """
+    Simulates a mesh of uncoupled SASLIF neurons with different adaptation variables.
+    
+    The ARC variant does not save voltage time series.
+    """
+
+    # For compatibility with vectorized functions
+    neurodynamic_parameter_mesh = neurodynamic_parameter_mesh.astype(nb.float32) 
+    forcing = forcing.astype(nb.float32)
+
+    # Initialize integer constants
+    num_timesteps = int(simulation_duration/dt)
+    refractory_period_length = int(refractory_period_duration/dt)
+
+    # Initialize system variable arrays
+    V = np.ones((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    V = hadamard(V, rest_V)
+    xi = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    W = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+     
+    # Initialize neuron state arrays
+    spike_state_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.bool_)
+    refractory_period_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    subthreshold_matrix = V[:, :] < neuron_threshold
+    suprathreshold_matrix = ~subthreshold_matrix
+
+    # Initialize output arrays
+    stack_height = 5000 # Maximum number of spikes supported per neuron
+    spike_stack = np.zeros((subspace_1_size, subspace_2_size, stack_height), dtype=nb.int32) # To contain indices of each spike along axis 2
+    stack_topography = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.int64) # 2d array indicating 'height' of each column when visualized from above
+
+    # Initialize equation constants
+    neurodynamic_parameter_mesh[:, :, 1] = neurodynamic_parameter_mesh[:, :, 1]*((-dt)/adaptation_time_constant)
+    weiner_coefficient = nb.float32(OU_sigma*math.sqrt(dt*OU_time_constant))
+
+    # Initialize mesh state
+    spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
+    spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
+    refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
+    refractory_period_matrix = condit_assign_num(refractory_period_matrix, refractory_period_matrix > refractory_period_length, 0)
+
+    V_dummy = V # Redundancy to avoid access/update conflicts
+
+    print('\n')
+    for step in range(num_timesteps):
+
+        # Generate stochastic element
+        random_numbers = np.random.normal(loc=OU_mu, scale=1.0, size=(subspace_1_size, subspace_2_size)).astype(nb.float32)
+
+        # Update adaptation depending on neuron state (subthreshold/suprathreshold)
+        W = condit_add(W, spike_state_matrix, neurodynamic_parameter_mesh[:, :, 0]*dt)
+        W = condit_add(W, True, hadamard(neurodynamic_parameter_mesh[:, :, 1], W))
+
+        # Update Ornstein-Uhlenbeck noise contribution
+        xi = ornstein_uhlenbeck(xi, OU_mu, OU_time_constant, dt, weiner_coefficient, random_numbers[:, :])
+
+        # Conditionally integrate voltage
+        V[:, :] = subthresh_SASLIF_integrate(V_dummy[:, :], ~spike_state_matrix, dt, rest_V, forcing[step], W[:, :], neuron_time_constant, xi[:, :])
+        V[:, :] = condit_assign_num(V_dummy[: , :], spike_state_matrix & (refractory_period_matrix <= refractory_period_length), spike_V)
+        V[:, :] = condit_assign_num(V_dummy[: , :], spike_state_matrix & (refractory_period_matrix > refractory_period_length), rest_V)
+
+        # Reset refractory period wherever it exceeds the absolute duration
+        refractory_period_matrix = condit_assign_num(refractory_period_matrix, (refractory_period_matrix > refractory_period_length), 0)
+
+        # Update neuron state arrays
+        subthreshold_matrix = V[:, :] < neuron_threshold
+        suprathreshold_matrix = ~subthreshold_matrix
+        spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
+        spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
+
+        # Log all spikes for this index
+        x, y = np.where((spike_state_matrix == True) & (refractory_period_matrix == 0)) # Coordinates where neurons were newly assigned to the spike state
+        z = np.ones((x.shape[0],), dtype=nb.int64) # Initialize a vector for the index of the top of each column
+        for i in range(x.shape[0]):
+            z[i] = stack_topography_flatten(z[i], stack_topography[x[i], y[i]]) # Take heights wherever a spike was recorded
+            spike_stack[x[i], y[i], z[i]] = step # Assign the current index to each coordinate in the stack
+            stack_topography[x[i], y[i]] = integer_add(stack_topography[x[i], y[i]], 1) # Increment the topography wherever a spike was added
+
+        # Increment refractory period state for neurons which recently fired
+        refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
+        V_dummy = V # Update redundancy
+
+        # Numba nopython JIT friendly progress bar
+        if track_progress == True:
+            if step % 100000 == 0:
+                print ("\033[A                             \033[A")
+                percent = str(int(step/num_timesteps*100)) + '.' + str(int((step/num_timesteps*100) % 1))  
+                print('Simulation progress: ', percent, '%')
+            elif step == num_timesteps - 1:
+                print ("\033[A                             \033[A") 
+                print('Simulation progress: 100.0% - COMPLETE')
+    
+    return spike_stack
+@nb.njit
+def HPC_phi_6_sim_stochastic_subspace(
+    forcing,
+    stochastic_parameter_mesh,
+    subspace_1_size, 
+    subspace_2_size, 
+    simulation_duration, 
+    dt,
+    neuron_threshold,
+    neuron_time_constant,
+    rest_V,
+    spike_V,
+    refractory_period_duration,
+    adaptation_response_constant,
+    adaptation_decay_constant,
+    adaptation_time_constant,
+    OU_time_constant,
+    track_progress=True
+    ):
+    """
+    Simulates a mesh of uncoupled SASLIF neurons with different stochastic input (noise) variables.
+    
+    Unlike the ARC variant, voltage time series are saved.
+    """
+    # For compatibility with vectorized functions
+    stochastic_parameter_mesh = stochastic_parameter_mesh.astype(nb.float32) 
+    forcing = forcing.astype(nb.float32)
+
+    # Initialize integer constants
+    num_timesteps = int(simulation_duration/dt)
+    refractory_period_length = int(refractory_period_duration/dt)
+
+    # Initialize system variable arrays
+    V = np.ones((subspace_1_size, subspace_2_size, num_timesteps), dtype=nb.float32)
+    V = hadamard(V, rest_V)
+    xi = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    W = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+     
+    # Initialize neuron state arrays
+    spike_state_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.bool_)
+    refractory_period_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    subthreshold_matrix = V[:, :, 0] < neuron_threshold
+    suprathreshold_matrix = ~subthreshold_matrix
+
+    # Initialize output arrays
+    stack_height = 5000 # Maximum number of spikes supported per neuron
+    spike_stack = np.zeros((subspace_1_size, subspace_2_size, stack_height), dtype=nb.int32) # To contain indices of each spike along axis 2
+    stack_topography = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.int64) # 2d array indicating 'height' of each column when visualized from above
+
+    # Initialize equation constants
+    adaptation_decay_rate = adaptation_decay_constant/adaptation_time_constant
+    stochastic_parameter_mesh[:, :, 1] = stochastic_parameter_mesh[:, :, 1]*math.sqrt(dt*OU_time_constant)
+
+    # Initialize mesh state
+    spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
+    spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
+    refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
+    refractory_period_matrix = condit_assign_num(refractory_period_matrix, refractory_period_matrix > refractory_period_length, 0)
+
+    print('\n')
+    for step in range(1, num_timesteps):
+
+        # Generate stochastic element
+        random_numbers = heterogenous_normal(stochastic_parameter_mesh[:, :, 0], nb.float32(1.0))
+
+        # Update adaptation depending on neuron state (subthreshold/suprathreshold)
+        W = condit_add(W, spike_state_matrix, nb.float32(dt*adaptation_response_constant))
+        W = condit_add(W, True, nb.float32(-dt*adaptation_decay_rate)*W)
+
+        # Update Ornstein-Uhlenbeck noise contribution
+        xi = ornstein_uhlenbeck(xi, stochastic_parameter_mesh[:, :, 0], OU_time_constant, dt, stochastic_parameter_mesh[:, :, 1], random_numbers[:, :])
+
+        # Conditionally integrate voltage
+        V[:, :, step] = subthresh_SASLIF_integrate(V[:, :, step - 1], ~spike_state_matrix, dt, rest_V, forcing[step], W[:, :], neuron_time_constant, xi[:, :])
+        V[:, :, step] = condit_assign_num(V[: , :, step], spike_state_matrix & (refractory_period_matrix <= refractory_period_length), spike_V)
+        V[:, :, step] = condit_assign_num(V[: , :, step], spike_state_matrix & (refractory_period_matrix > refractory_period_length), rest_V)
+
+        # Reset refractory period wherever it exceeds the absolute duration
+        refractory_period_matrix = condit_assign_num(refractory_period_matrix, (refractory_period_matrix > refractory_period_length), 0)
+
+        # Update neuron state arrays
+        subthreshold_matrix = V[:, :, step] < neuron_threshold
+        suprathreshold_matrix = ~subthreshold_matrix
+        spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
+        spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
+
+        # Log all spikes for this index
+        x, y = np.where((spike_state_matrix == True) & (refractory_period_matrix == 0)) # Coordinates where neurons were newly assigned to the spike state
+        z = np.ones((x.shape[0],), dtype=nb.int64) # Initialize a vector for the index of the top of each column
+        for i in range(x.shape[0]):
+            z[i] = stack_topography_flatten(z[i], stack_topography[x[i], y[i]]) # Take heights wherever a spike was recorded
+            spike_stack[x[i], y[i], z[i]] = step # Assign the current index to each coordinate in the stack
+            stack_topography[x[i], y[i]] = integer_add(stack_topography[x[i], y[i]], 1) # Increment the topography wherever a spike was added
+
+        # Increment refractory period state for neurons which recently fired
+        refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
+
+        # Numba nopython JIT friendly progress bar
+        if track_progress == True:
+            if step % 100000 == 0:
+                print ("\033[A                             \033[A")
+                percent = str(int(step/num_timesteps*100)) + '.' + str(int((step/num_timesteps*100) % 1))  
+                print('Simulation progress: ', percent, '%')
+            elif step == num_timesteps - 1:
+                print ("\033[A                             \033[A") 
+                print('Simulation progress: 100.0% - COMPLETE')
+
+    return V, spike_stack
+@nb.njit
+def HPC_phi_6_sim_stochastic_subspace_ARC(
+    forcing,
+    stochastic_parameter_mesh,
+    subspace_1_size, 
+    subspace_2_size, 
+    simulation_duration, 
+    dt,
+    neuron_threshold,
+    neuron_time_constant,
+    rest_V,
+    spike_V,
+    refractory_period_duration,
+    adaptation_response_constant,
+    adaptation_decay_constant,
+    adaptation_time_constant,
+    OU_time_constant,
+    track_progress=True
+    ):
+    """
+    Simulates a mesh of uncoupled SASLIF neurons with different stochastic input (noise) variables.
+    
+    The ARC variant does not save voltage time series.
+    """
+    # For compatibility with vectorized functions
+    stochastic_parameter_mesh = stochastic_parameter_mesh.astype(nb.float32) 
+    forcing = forcing.astype(nb.float32)
+
+    # Initialize integer constants
+    num_timesteps = int(simulation_duration/dt)
+    refractory_period_length = int(refractory_period_duration/dt)
+
+    # Initialize system variable arrays
+    V = np.ones((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    V = hadamard(V, rest_V)
+    xi = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    W = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+     
+    # Initialize neuron state arrays
+    spike_state_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.bool_)
+    refractory_period_matrix = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.float32)
+    subthreshold_matrix = V[:, :] < neuron_threshold
+    suprathreshold_matrix = ~subthreshold_matrix
+
+    # Initialize output arrays
+    stack_height = 5000 # Maximum number of spikes supported per neuron
+    spike_stack = np.zeros((subspace_1_size, subspace_2_size, stack_height), dtype=nb.int32) # To contain indices of each spike along axis 2
+    stack_topography = np.zeros((subspace_1_size, subspace_2_size), dtype=nb.int64) # 2d array indicating 'height' of each column when visualized from above
+
+    # Initialize equation constants
+    adaptation_decay_rate = adaptation_decay_constant/adaptation_time_constant
+    stochastic_parameter_mesh[:, :, 1] = stochastic_parameter_mesh[:, :, 1]*math.sqrt(dt*OU_time_constant)
+
+    # Initialize mesh state
+    spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
+    spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
+    refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
+    refractory_period_matrix = condit_assign_num(refractory_period_matrix, refractory_period_matrix > refractory_period_length, 0)
+
+    V_dummy = V # Redundancy to avoid access/update conflicts
+
+    print('\n')
+    for step in range(1, num_timesteps):
+
+        # Generate stochastic element
+        random_numbers = heterogenous_normal(stochastic_parameter_mesh[:, :, 0], nb.float32(1.0))
+
+        # Update adaptation depending on neuron state (subthreshold/suprathreshold)
+        W = condit_add(W, spike_state_matrix, nb.float32(dt*adaptation_response_constant))
+        W = condit_add(W, True, nb.float32(-dt*adaptation_decay_rate)*W)
+
+        # Update Ornstein-Uhlenbeck noise contribution
+        xi = ornstein_uhlenbeck(xi, stochastic_parameter_mesh[:, :, 0], OU_time_constant, dt, stochastic_parameter_mesh[:, :, 1], random_numbers[:, :])
+
+        # Conditionally integrate voltage
+        V[:, :] = subthresh_SASLIF_integrate(V_dummy[:, :], ~spike_state_matrix, dt, rest_V, forcing[step], W[:, :], neuron_time_constant, xi[:, :])
+        V[:, :] = condit_assign_num(V_dummy[: , :], spike_state_matrix & (refractory_period_matrix <= refractory_period_length), spike_V)
+        V[:, :] = condit_assign_num(V_dummy[: , :], spike_state_matrix & (refractory_period_matrix > refractory_period_length), rest_V)
+
+        # Reset refractory period wherever it exceeds the absolute duration
+        refractory_period_matrix = condit_assign_num(refractory_period_matrix, (refractory_period_matrix > refractory_period_length), 0)
+
+        # Update neuron state arrays
+        subthreshold_matrix = V[:, :] < neuron_threshold
+        suprathreshold_matrix = ~subthreshold_matrix
+        spike_state_matrix = condit_assign_bool(spike_state_matrix, suprathreshold_matrix, True)
+        spike_state_matrix = condit_assign_bool(spike_state_matrix, subthreshold_matrix, False)
+
+        # Log all spikes for this index
+        x, y = np.where((spike_state_matrix == True) & (refractory_period_matrix == 0)) # Coordinates where neurons were newly assigned to the spike state
+        z = np.ones((x.shape[0],), dtype=nb.int64) # Initialize a vector for the index of the top of each column
+        for i in range(x.shape[0]):
+            z[i] = stack_topography_flatten(z[i], stack_topography[x[i], y[i]]) # Take heights wherever a spike was recorded
+            spike_stack[x[i], y[i], z[i]] = step # Assign the current index to each coordinate in the stack
+            stack_topography[x[i], y[i]] = integer_add(stack_topography[x[i], y[i]], 1) # Increment the topography wherever a spike was added
+
+        # Increment refractory period state for neurons which recently fired
+        refractory_period_matrix = condit_add(refractory_period_matrix, spike_state_matrix & (refractory_period_matrix <= refractory_period_length), 1)
+        V_dummy = V # Update redundancy
+
+        # Numba nopython JIT friendly progress bar
+        if track_progress == True:
+            if step % 100000 == 0:
+                print ("\033[A                             \033[A")
+                percent = str(int(step/num_timesteps*100)) + '.' + str(int((step/num_timesteps*100) % 1))  
+                print('Simulation progress: ', percent, '%')
+            elif step == num_timesteps - 1:
+                print ("\033[A                             \033[A") 
+                print('Simulation progress: 100.0% - COMPLETE')
+
+    return spike_stack
 
 # Non-compiled pipeline functions
-def HPC_phi_phase_analysis_prototype(spike_stack, analytic_signal):
+def HPC_phi_phase_analysis(spike_stack, analytic_signal):
     """
     Return a block of mean phase on each cycle for each neuron.
 
@@ -736,17 +1164,26 @@ def HPC_phi_phase_analysis_prototype(spike_stack, analytic_signal):
 
     return cycle_phi_block, cycle_boundary_indices
 def HPC_phi_compute_RMQ(post_sim_specifications, cycle_phi_block):
-    
-    num_cycles = post_sim_specifications['num_cycles']
-    if num_cycles <= 0 or num_cycles == 'all':
-        num_cycles = cycle_phi_block.shape[2]
+    """
+    Return an array of RMQ assessments over a mesh of finite neuron time series.
 
+    cycle_phi_block -- 3d array where axes 0 and 1 give coordinates for a neuron and axis 2 contains some
+                       measure of spike phase central tendency over each cycle of theta.
+    """
+
+    # Set the number of cycles over which to compute RMQ
+    num_cycles = post_sim_specifications['num_cycles']
+    if num_cycles <= 0 or num_cycles == 'all': 
+        num_cycles = cycle_phi_block.shape[2] # For negative values or str literal 'all', compute RMQ over all cycles
+
+    # In case number of cycles is > the number available, set number of cycles to number available
     num_cycles = min(num_cycles, cycle_phi_block.shape[2])
 
-    cycle_phi_block_slice = cycle_phi_block[:, :, -num_cycles:] 
-    masked_cycle_phi_block_slice = np.ma.masked_equal(cycle_phi_block_slice, 0)
-    first_order_differences = np.diff(np.flip(masked_cycle_phi_block_slice, axis=2), axis=2)
-    RMQ_array = np.mean(first_order_differences, axis=2)
+    # Compute RMQ
+    cycle_phi_block_slice = cycle_phi_block[:, :, -num_cycles:] # Consider only last n cycles, where n is determined above
+    masked_cycle_phi_block_slice = np.ma.masked_equal(cycle_phi_block_slice, 0) # Do not consider zeros in computation (default value for cycles with no spike activity)
+    first_order_differences = np.diff(np.flip(masked_cycle_phi_block_slice, axis=2), axis=2) # The backward differences are samples over the time series
+    RMQ_array = np.mean(first_order_differences, axis=2) # Central tendency of backward differences is RMQ
 
     return RMQ_array
 
@@ -921,10 +1358,6 @@ def probe_return_map(cycle_phi_block, coordinate: tuple):
         plt.show()
 def get_centrally_symmetric_indices(subset_1, subset_2, subset_1_num, subset_2_num):
 
-    n = len(subset_1)
-    m = len(subset_2)
-    line_of_identity = np.linspace(0, 2*np.pi) 
-
     threshold_of_symmetry_1 = (subset_1[-1] - subset_1[0])/2 + subset_1[0]
     threshold_of_symmetry_2 = (subset_2[-1] - subset_2[0])/2 + subset_2[0]
 
@@ -1004,8 +1437,8 @@ def main():
         'OU_time_constant': nb.int32(50),
 
         # Dual oscillator input parameters
-        'theta_amplitude': 20, # mV
-        'interference_amplitude': 20, # mV
+        'theta_amplitude': 35, # mV
+        'interference_amplitude': 35, # mV
 
         'theta_frequency': 10, # Hz
         'interference_frequency': 11, # Hz
@@ -1017,22 +1450,22 @@ def main():
         'encode': False,
         'encode_path': '/'.join([os.getcwd(), 'serializedSims']),
 
-        'decode': True,
+        'decode': False,
         'decode_path': '/'.join([os.getcwd(), 'serializedSims', 'GT_precession', 'precession_theta_amplitude_interference_amplitude_20_50_10_20_50_10_7112021.npz']),
 
         'figure_path': False, #'/'.join([os.getcwd(), 'modelFigures', 'GT_precession']),
 
         'contour_suppress': False,
-        'TS_mesh_suppress': True,
-        'RM_mesh_suppress': True,
+        'TS_mesh_suppress': False,
+        'RM_mesh_suppress': False,
     }
     
-    Simulation = PipelineManager(SIM_SPECS, ANALYSIS_SPECS, DOI=True, ARC=False)
+    Simulation = PipelineManager(SIM_SPECS, ANALYSIS_SPECS, DOI=True, ARC=True)
 
-    Simulation.add_parameter_subset(20, 50, 10, 'theta_amplitude')
-    Simulation.add_parameter_subset(20, 50, 10, 'interference_amplitude')
+    Simulation.add_parameter_subset(0.1, 0.8, 10, 'OU_mu')
+    Simulation.add_parameter_subset(50, 150, 10, 'OU_sigma')
 
-    Simulation.execute_pipeline('forcing')
+    Simulation.execute_pipeline('stochastic')
 
 if __name__ == '__main__':
     main()

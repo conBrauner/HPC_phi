@@ -1,4 +1,5 @@
 import numba as nb
+import numpy as np
 from numpy.matrixlib.defmatrix import matrix
 
 @nb.vectorize([nb.float32(nb.float32, nb.float32)])
@@ -55,3 +56,7 @@ def test_moperation(elem1, elem2, mask_element):
 @nb.vectorize([nb.int64(nb.int64, nb.int64)])
 def stack_topography_flatten(element_1, element_2):
     return element_1*element_2
+
+@nb.vectorize([nb.float32(nb.float32, nb.float32)])
+def heterogenous_normal(loc, scale):
+    return np.random.normal(loc=loc, scale=scale)
