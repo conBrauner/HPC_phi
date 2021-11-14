@@ -4,12 +4,16 @@ import time
 import warnings
 from datetime import datetime, date
 from pathlib import Path
+import operator as op
 
 import matplotlib
+from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 import numba as nb
 import numpy as np
 from scipy.signal import hilbert
+from sklearn.model_selection import GridSearchCV, LeaveOneOut
+from sklearn.neighbors import KernelDensity
 from tqdm import tqdm
 try:
     import PySimpleGUI as sg
@@ -39,6 +43,13 @@ class PipelineManager():
         self.probe_RM = False
         self.date_of_sim = datetime.now()
         self.no_V = False
+        self.cmap = 'cool'
+        self.get_average_indices = False
+
+        if self.contour_suppress == False or self.figure_path != False:
+            self._set_cmap()
+        if self.TS_regime_mesh_suppress == False or self.figure_path != False:
+            self.get_average_indices = True
 
         if self.theta_frequency < self.interference_frequency:
             self.ground_truth = 'precession'
@@ -105,6 +116,23 @@ class PipelineManager():
 
         return stochastic_parameter_mesh, theta_rhythm, forcing_function, OU_mu_key, OU_sigma_key
 
+    def _set_cmap(self, RGB_start=[(119 + -93)/256, (176 + -93)/256, (93 + -93)/256], RGB_end=[(41 + 50)/256, (171 + 50)/256, (202 + 50)/256], blunt_end=False, blunt_end_length=25, preset_name=False):
+
+        if preset_name != False:
+            self.cmap = preset_name
+        else:
+            N = 256
+            value_array = np.ones((N, 4))
+
+            value_array[:, 0] = np.linspace(RGB_start[0], RGB_end[0], N)
+            value_array[:, 1] = np.linspace(RGB_start[1], RGB_end[1], N)
+            value_array[:, 2] = np.linspace(RGB_start[2], RGB_end[2], N)
+            
+            if blunt_end != False:
+                value_array[:blunt_end_length, :] = np.array(blunt_end.append(1))
+
+            self.cmap = ListedColormap(value_array)
+            
     def add_parameter_subset(self, start: float, stop: float, num: int, name: str):
       
         self.__dict__.update({f'subset_{self.num_subsets + 1}': np.linspace(start, stop, num)})
@@ -120,7 +148,7 @@ class PipelineManager():
         
         self.probe_RM = True
         self.probe_RM_coordinate = coordinate
-        
+    
     def execute_pipeline(self, mesh_type: str):
         
         # Initialize simulation file name and encode path
@@ -347,7 +375,12 @@ class PipelineManager():
         if self.DOI == True:
 
             # Construct the block of mean phase on each cycle (0 for cycles with no spikes)
-            cycle_phi_block, cycle_boundary_indices = HPC_phi_phase_analysis(spike_stack, hilbert(theta_rhythm))
+            cycle_phi_block, cycle_boundary_indices, cycle_index_block = HPC_phi_phase_analysis(
+                spike_stack, 
+                hilbert(theta_rhythm),
+                central_tendency_technique=self.central_tendency_technique,
+                get_average_indices=self.get_average_indices
+            )
 
             # Plot sample return map if requested
             if self.probe_RM == True:
@@ -377,7 +410,8 @@ class PipelineManager():
                 self.subset_1, 
                 self.subset_2, 
                 self.subset_1_name, 
-                self.subset_2_name, 
+                self.subset_2_name,
+                self.cmap, 
                 figure_path=self.figure_path, 
                 suppress=self.contour_suppress
                 )
@@ -408,6 +442,23 @@ class PipelineManager():
                         self.mesh_fig_dimensions[1], 
                         suppress=self.TS_mesh_suppress, 
                         figure_path=self.figure_path
+                        )
+                    if self.get_average_indices == True:
+                        TS_regime_meshfig(
+                            Vm_t,
+                            theta_rhythm,
+                            cycle_index_block,
+                            cycle_boundary_indices,
+                            self.simulation_duration,
+                            self.dt,
+                            self.subset_1,
+                            self.subset_2,
+                            self.subset_1_name,
+                            self.subset_2_name,
+                            self.mesh_fig_dimensions[0],
+                            self.mesh_fig_dimensions[1],
+                            suppress=self.TS_regime_mesh_suppress,
+                            figure_path=self.figure_path
                         )
         
         # No analysis, just plot output
@@ -1113,7 +1164,7 @@ def HPC_phi_6_sim_stochastic_subspace_ARC(
     return spike_stack
 
 # Non-compiled pipeline functions
-def HPC_phi_phase_analysis(spike_stack, analytic_signal):
+def HPC_phi_phase_analysis(spike_stack, analytic_signal, central_tendency_technique='mean', get_average_indices=False):
     """
     Return a block of mean phase on each cycle for each neuron.
 
@@ -1121,6 +1172,8 @@ def HPC_phi_phase_analysis(spike_stack, analytic_signal):
                    indices of spikes on time series.
     analytic_signal -- complex 1d array of Hilbert-transformed theta signal.
     """
+
+    cycle_index_block = False
 
     # Preprocess the analytic signal
     theta_phase_time_series = np.arctan2(analytic_signal.imag, analytic_signal.real) # Extract phase
@@ -1140,7 +1193,9 @@ def HPC_phi_phase_analysis(spike_stack, analytic_signal):
     spike_stack = np.ma.masked_equal(spike_stack[:, :, :truncation_index], 0)
     
     # Cycle phi block generation algorithm; spikeless cycles have mean phase of zero
-    for i in range(len(cycle_boundary_indices) + 1):
+    t0 = time.time()
+    num_cycles = len(cycle_boundary_indices) + 1
+    for i in range(num_cycles):
         cycle_phi_slice = np.zeros((spike_stack.shape[0], spike_stack.shape[1], 1)) # Initialize a slice to populate with means
         for row_index in range(spike_stack.shape[0]):
             for column_index in range(spike_stack.shape[1]):
@@ -1148,21 +1203,47 @@ def HPC_phi_phase_analysis(spike_stack, analytic_signal):
                 if i == 0: 
                     cycle_phi = theta_phase_time_series[stack_column[(stack_column < cycle_boundary_indices[i]) & (stack_column.mask == False)]]
                     if cycle_phi.size != 0:
-                        cycle_phi_slice[row_index, column_index, 0] = np.mean(cycle_phi)
+                        cycle_phi_slice[row_index, column_index, 0] = central_tendency_selector(cycle_phi, central_tendency_technique)
                 elif i < len(cycle_boundary_indices):
                     cycle_phi = theta_phase_time_series[stack_column[(stack_column >= cycle_boundary_indices[i - 1]) & (stack_column < cycle_boundary_indices[i]) & (stack_column.mask == False)]]
                     if cycle_phi.size != 0:
-                        cycle_phi_slice[row_index, column_index, 0] = np.mean(cycle_phi)
+                        cycle_phi_slice[row_index, column_index, 0] = central_tendency_selector(cycle_phi, central_tendency_technique)
                 else:
                     cycle_phi = theta_phase_time_series[stack_column[(stack_column >= cycle_boundary_indices[i - 1]) & (stack_column.mask == False)]]
                     if cycle_phi.size != 0:
-                        cycle_phi_slice[row_index, column_index, 0] = np.mean(cycle_phi)
+                        cycle_phi_slice[row_index, column_index, 0] = central_tendency_selector(cycle_phi, central_tendency_technique)
         if i == 0:
             cycle_phi_block = cycle_phi_slice
         else:
-            cycle_phi_block = np.concatenate((cycle_phi_block, cycle_phi_slice), axis=2)  
+            cycle_phi_block = np.concatenate((cycle_phi_block, cycle_phi_slice), axis=2) 
 
-    return cycle_phi_block, cycle_boundary_indices
+        # Numba nopython JIT friendly progress bar
+        if i % 10 == 0:
+            print ("\033[A                             \033[A")
+            percent = str(int(i/num_cycles*100)) + '.' + str(int((i/num_cycles*100) % 1))  
+            print('Central tendency computation progress: ', percent, '%')
+        elif i == num_cycles - 1:
+            print ("\033[A                             \033[A") 
+            print('Central tendency computation progress: 100.0% - COMPLETE')
+
+    t1 = time.time() 
+    print(f"Time compute cycle phase central tendencies: {(t1 - t0):.2f} s\n")
+
+    if get_average_indices == True:
+
+        unwrapped_theta_phase_time_series = np.unwrap(theta_phase_time_series)
+        cycle_index_block = np.zeros((cycle_phi_block.shape[0], cycle_phi_block.shape[1], cycle_phi_block.shape[2]), dtype=int)
+
+        for i in range(cycle_index_block.shape[2]):
+            for j in range(cycle_index_block.shape[0]):
+                for k in range(cycle_index_block.shape[1]):
+                    if cycle_phi_block[j, k, i] == 0:
+                        continue
+                    phase_value = cycle_phi_block[j, k, i] + i*2*np.pi 
+                    nearest_phase_index = (np.abs(phase_value - unwrapped_theta_phase_time_series)).argmin()
+                    cycle_index_block[j, k, i] = nearest_phase_index
+
+    return cycle_phi_block, cycle_boundary_indices, cycle_index_block
 def HPC_phi_compute_RMQ(post_sim_specifications, cycle_phi_block):
     """
     Return an array of RMQ assessments over a mesh of finite neuron time series.
@@ -1188,14 +1269,14 @@ def HPC_phi_compute_RMQ(post_sim_specifications, cycle_phi_block):
     return RMQ_array
 
 # Plotting functions
-def RMQ_meshfig(RMQ_array, subset_1, subset_2, subset_1_name, subset_2_name, suppress=False, figure_path=False):
+def RMQ_meshfig(RMQ_array, subset_1, subset_2, subset_1_name, subset_2_name, cmap, suppress=False, figure_path=False):
 
     RMQ_array = np.flipud(RMQ_array)
 
     plt.close()
     fig, ax = plt.subplots()
 
-    shading = ax.contourf(subset_1, subset_2, RMQ_array, cmap='cool', alpha=0.7) 
+    shading = ax.contourf(subset_1, subset_2, RMQ_array, cmap=cmap, alpha=0.7) 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         ax.contour(subset_1, subset_2, RMQ_array, [0], colors='k', linewidths=0.9, linestyle='dashed', alpha=0.75)
@@ -1304,8 +1385,66 @@ def RM_meshfig(cycle_phi_block, subset_1, subset_2, subset_1_name, subset_2_name
         plt.show()
     if figure_path != False:
         figure_object.savefig(Path('/'.join([figure_path, 'meshReturnMaps', 'HPC_phi_meshReturnMap_{}{}{}'.format(date.today().day, date.today().month, '.png')])), dpi=400, bbox_inches='tight')  
+def TS_regime_meshfig(V, theta_rhythm, cycle_indices_block, cycle_boundaries, simulation_duration, dt, subset_1, subset_2, subset_1_name, subset_2_name, subset_1_num, subset_2_num, suppress=False, figure_path=False):
 
-# Utility functions
+    nearest_indices_1, nearest_indices_2 = get_centrally_symmetric_indices(subset_1, subset_2, subset_1_num, subset_2_num)
+
+    time_to_plot = min(simulation_duration, 2000)
+    time_axis_length = int(time_to_plot/dt)
+    time_axis = np.linspace(0, time_to_plot, num=time_axis_length)
+
+    axis_window_shift = int(simulation_duration/dt) - time_axis_length
+    cycle_indices_block = np.ma.masked_less(cycle_indices_block, axis_window_shift)
+    shifted_cycle_indices_block = cycle_indices_block - axis_window_shift
+
+    plt.close()
+    fig = plt.figure(figsize=(19.2, 10.8))
+    fig.patch.set_alpha(0.0)
+    root_gridspec = fig.add_gridspec(len(nearest_indices_2), len(nearest_indices_1), wspace=0.5, hspace=0.5)
+
+    for row_number in range(len(nearest_indices_1)):
+        for column_number in range(len(nearest_indices_2)):
+            sub_gridspec = root_gridspec[row_number, column_number].subgridspec(2, 1, wspace=0.1, hspace=0.4)
+            axes = [fig.add_subplot(sub_gridspec[0]), fig.add_subplot(sub_gridspec[1])]
+            axes[0].get_shared_x_axes().join(axes[0], axes[1])
+
+            for ax in axes:
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+
+            axes[0].plot(time_axis, V[row_number, column_number, -time_axis_length:], linewidth=0.25, color='k', label='Vm')
+            axes[1].plot(time_axis, theta_rhythm[-time_axis_length:], linewidth=0.25, color='k', label='LFP')
+
+            shifted_cycle_indices = shifted_cycle_indices_block[row_number, column_number, :]
+            shifted_cycle_indices = shifted_cycle_indices[shifted_cycle_indices.mask == False]
+            cycle_indices = cycle_indices_block[row_number, column_number, :]
+            cycle_indices = cycle_indices[cycle_indices.mask == False]
+            axes[1].scatter(time_axis[shifted_cycle_indices], theta_rhythm[cycle_indices], s=6, c='red')
+
+            axes[0].xaxis.set_ticks([])
+            axes[1].yaxis.set_ticks([])
+
+            if row_number == len(nearest_indices_1) - 1:
+                axes[1].set_xlabel(str(round(subset_1[nearest_indices_1[column_number]], 1)), fontsize='large')
+            if column_number == 0:
+                axes[0].set_ylabel(str(round(subset_2[-(nearest_indices_2[row_number] + 1)], 1)), fontsize='large')
+
+            vline_bottom = min(theta_rhythm)
+            vline_top = max(theta_rhythm)
+            for boundary_index in cycle_boundaries[cycle_boundaries <= time_axis_length]:
+                axes[1].vlines(time_axis[boundary_index - 1], vline_bottom, vline_top, linestyle='dashed', color='k', linewidth=0.25)
+
+    fig.text(0.5, 0.02, subset_1_name.replace("_", " ").capitalize(), ha='center', fontsize='x-large')
+    fig.text(0.04, 0.5, subset_2_name.replace("_", " ").capitalize(), va='center', rotation='vertical', fontsize='x-large')
+
+    figure_object = plt.gcf()
+
+    if suppress == False:
+        plt.show()
+    if figure_path != False:
+        figure_object.savefig(Path('/'.join([figure_path, 'meshTimeSeries', 'HPC_phi_meshTimeSeries_{}{}{}'.format(date.today().day, date.today().month, '.png')])), dpi=400, bbox_inches='tight')  
+
+# Helper functions
 def probe_time_series(data, simulation_duration, dt, coordinate: tuple, timestamping_block=None):
     
     plt.close()
@@ -1411,12 +1550,37 @@ def handle_sim_encoding(sim_specifications, filepath, V=False, spike_stack=False
         del decoded_message
         
         return V, spike_stack, sim_specifications
+def central_tendency_selector(data, central_tendency_technique):
+    if central_tendency_technique == 'mean':
+        CT = np.mean(data)
+    elif central_tendency_technique == 'median':
+        CT = np.median(data)
+    elif central_tendency_technique == 'KDE':
+        if data.size == 1:
+            CT = data[0]
+        else:
+            grid = GridSearchCV(
+                KernelDensity(kernel='gaussian'),
+                {'bandwidth': 10**np.linspace(-1, 1, 100)},
+                cv=LeaveOneOut()
+            )
+            grid.fit(data[:, None])
+            optimal_bandwidth = grid.best_params_['bandwidth']
+
+            KDE = KernelDensity(bandwidth=optimal_bandwidth, kernel='gaussian')
+            KDE.fit(data[:, None])
+            KDE_interval = np.linspace(0, 2*np.pi, num=10000)
+
+            CT = KDE_interval[np.argmax(np.exp(KDE.score_samples(KDE_interval[:, None])))]
+    else:
+        CT = np.mean(data)
+    return CT
 
 def main():
 
     SIM_SPECS = {
         # Time parameters
-        'simulation_duration': 10000, # ms
+        'simulation_duration': 3000, # ms
         'dt': nb.float32(0.01), # ms
         
         # Neuron biophysical parameters
@@ -1446,6 +1610,7 @@ def main():
     ANALYSIS_SPECS = {
 
         'num_cycles': -1,
+        'central_tendency_technique': 'KDE',
 
         'encode': False,
         'encode_path': '/'.join([os.getcwd(), 'serializedSims']),
@@ -1456,16 +1621,17 @@ def main():
         'figure_path': False, #'/'.join([os.getcwd(), 'modelFigures', 'GT_precession']),
 
         'contour_suppress': False,
-        'TS_mesh_suppress': False,
-        'RM_mesh_suppress': False,
+        'TS_mesh_suppress': True,
+        'RM_mesh_suppress': True,
+        'TS_regime_mesh_suppress': True
     }
     
-    Simulation = PipelineManager(SIM_SPECS, ANALYSIS_SPECS, DOI=True, ARC=True)
+    Simulation = PipelineManager(SIM_SPECS, ANALYSIS_SPECS, DOI=True, ARC=False)
 
-    Simulation.add_parameter_subset(0.1, 0.8, 10, 'OU_mu')
-    Simulation.add_parameter_subset(50, 150, 10, 'OU_sigma')
+    Simulation.add_parameter_subset(50, 300, 2, 'response_constant')
+    Simulation.add_parameter_subset(8, 60, 2, 'decay_constant')
 
-    Simulation.execute_pipeline('stochastic')
+    Simulation.execute_pipeline('neurodynamics')
 
 if __name__ == '__main__':
     main()
