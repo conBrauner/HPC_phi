@@ -1,0 +1,4 @@
+# Data will be kept private until supervisor approval
+# For neat .gitignore conventions: https://stackoverflow.com/questions/3305869/are-multiple-gitignores-frowned-on 
+/*
+!/.gitignore
